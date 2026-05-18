@@ -11,7 +11,11 @@ import random
 # Week-12 선택 확장 토글 (필요 시 False로 끄면 기본 실행만 동작)
 USE_LLM = True       # Gemini로 요약/팁 보조
 USE_EXTERNAL = True  # PubMed, Google News 등 외부 도구 사용
-INTERNAL_SAMPLE_SIZE = 5  # 내부 풀에서 무작위로 뽑을 항목 수
+USE_LLM_REVIEW = False  # True로 바꾸면 Gemini API로 검토 보조
+THEORY_SAMPLE_SIZE = 3    # 이론/용어: 항상 포함할 항목 수 (큐레이션된 학습 자료)
+INTERNAL_SAMPLE_SIZE = 5  # 외부 데이터 없을 때 내부 샘플로 보충할 총 항목 수
+RANDOM_SEED = 42          # None으로 바꾸면 실행마다 다른 결과 (데모용)
+LLM_CALL_LIMIT = 2        # Gemini API 비용 통제: 수집 후 보강 최대 호출 횟수
 
 def _make_ssl_context():
     """macOS 시스템 인증서 부재 환경에서도 SSL 검증을 정상 수행하도록 certifi를 우선 사용한다."""
@@ -71,7 +75,7 @@ def summarize_with_gemini(type_, title, content):
     req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
     
     try:
-        time.sleep(2)  # 무료 티어 API 동시 요청 제한을 피하기 위해 2초 대기
+        time.sleep(2)  # Gemini API 연속 호출 간격 확보 (비용 및 과부하 방지)
         response = urllib.request.urlopen(req, context=ctx, timeout=15)
         res_data = json.loads(response.read())
         text_res = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -83,9 +87,15 @@ def summarize_with_gemini(type_, title, content):
         print(f"    - Gemini API 오류: {e}")
         return "뉴스/논문 원문을 확인해주세요.", "추후 분석 (API 호출 실패)"
 
-def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로그램", pubmed_query="sarcopenia OR elderly exercise"):
-    """구글 뉴스 및 PubMed에서 보조 데이터를 가져옵니다. (외부 도구 - 보강 정보)"""
+def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로그램", pubmed_query="sarcopenia exercise intervention OR older adults resistance training"):
+    """구글 뉴스 및 PubMed에서 보조 데이터를 가져옵니다. (외부 도구 - 보강 정보)
+
+    Returns:
+        facts: 수집된 항목 리스트
+        status: 소스별 성공/실패 상태 딕셔너리
+    """
     facts = []
+    status = {"google_news": "skipped", "pubmed": "skipped"}
 
     ctx = _make_ssl_context()
 
@@ -97,28 +107,27 @@ def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로
         response = urllib.request.urlopen(req, context=ctx, timeout=5)
         xml_data = response.read()
         root = ET.fromstring(xml_data)
-        
+
         count = 0
         for item in root.findall('.//item'):
             if count >= 2: break
             title = item.find('title').text
             link = item.find('link').text
-            
-            # Gemini를 활용한 고도화 요약 및 팁 생성
-            summary, practical_tip = summarize_with_gemini("뉴스", title, title)
-            
             facts.append({
                 "type": "뉴스",
                 "title": title,
-                "content": summary,
+                "content": "",
                 "keywords": "시니어, 스포츠, 보건소, 커뮤니티",
-                "practical_tip": practical_tip,
-                "link": link
+                "practical_tip": "추후 분석",
+                "link": link,
+                "source": "외부(Google News)"
             })
             count += 1
-        print("  - 구글 뉴스 RSS 연동 성공 ✅")
+        status["google_news"] = f"success ({count}건)"
+        print(f"  - 구글 뉴스 RSS 연동 성공 ✅ ({count}건)")
     except Exception as e:
-        print(f"  - 구글 뉴스 연동 실패 ⚠️: {e}")
+        status["google_news"] = f"failed: {type(e).__name__}"
+        print(f"  - 구글 뉴스 연동 실패 ⚠️ [{type(e).__name__}]: {e}")
 
     # 2. PubMed (영어 논문)
     try:
@@ -127,54 +136,57 @@ def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로
         search_res = urllib.request.urlopen(search_url, context=ctx, timeout=5)
         search_data = json.loads(search_res.read())
         id_list = search_data['esearchresult']['idlist']
-        
+
+        count = 0
         if id_list:
             ids = ",".join(id_list)
             summary_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={ids}&retmode=json"
             summary_res = urllib.request.urlopen(summary_url, context=ctx, timeout=5)
             summary_data = json.loads(summary_res.read())
-            
+
             for pid in id_list:
                 article = summary_data['result'][pid]
                 title = article.get('title', '')
                 link = f"https://pubmed.ncbi.nlm.nih.gov/{pid}/"
-                
-                # Gemini를 활용한 고도화 요약 및 팁 생성
-                summary, practical_tip = summarize_with_gemini("논문", title, title)
-                
                 facts.append({
                     "type": "논문",
                     "title": title,
-                    "content": summary,
+                    "content": "",
                     "keywords": "근감소증, 노년기, 운동처방",
-                    "practical_tip": practical_tip,
-                    "link": link
+                    "practical_tip": "추후 분석",
+                    "link": link,
+                    "source": "외부(PubMed)"
                 })
-        print("  - PubMed API 연동 성공 ✅")
+                count += 1
+        status["pubmed"] = f"success ({count}건)"
+        print(f"  - PubMed API 연동 성공 ✅ ({count}건)")
     except Exception as e:
-        print(f"  - PubMed 연동 실패 ⚠️: {e}")
-        
-    return facts
+        status["pubmed"] = f"failed: {type(e).__name__}"
+        print(f"  - PubMed 연동 실패 ⚠️ [{type(e).__name__}]: {e}")
+
+    return facts, status
 
 def extract_facts(raw_text):
     """입력된 텍스트에서 논문/뉴스를 분리하고 제목, 내용, 키워드를 추출합니다."""
     items = []
+    skipped = 0
     blocks = raw_text.strip().split("\n\n")
-    
+
+    # 지원하는 자료 유형: 논문, 뉴스, 이론, 케이스, 용어
+    type_tag_map = {
+        "[논문]": "논문",
+        "[뉴스]": "뉴스",
+        "[이론]": "이론",
+        "[케이스]": "케이스",
+        "[용어]": "용어",
+    }
+
     for block in blocks:
         lines = block.strip().split("\n")
-        if not lines:
+        if not lines or not lines[0].strip():
             continue
-            
+
         title_line = lines[0]
-        # 지원하는 자료 유형: 논문, 뉴스, 이론, 케이스, 용어
-        type_tag_map = {
-            "[논문]": "논문",
-            "[뉴스]": "뉴스",
-            "[이론]": "이론",
-            "[케이스]": "케이스",
-            "[용어]": "용어",
-        }
         type_ = None
         title = None
         for tag, label in type_tag_map.items():
@@ -182,14 +194,17 @@ def extract_facts(raw_text):
                 type_ = label
                 title = title_line.replace(tag, "").strip()
                 break
+
         if type_ is None:
+            skipped += 1
+            print(f"  [파싱 건너뜀] 인식 불가 형식: {title_line[:40]!r}")
             continue
-            
+
         content = ""
         keywords = ""
         link = "링크 없음"
         practical_tip = "추후 분석"
-        
+
         for line in lines[1:]:
             if line.startswith("- 초록:") or line.startswith("- 내용:"):
                 content = line.split(":", 1)[1].strip()
@@ -197,16 +212,23 @@ def extract_facts(raw_text):
                 keywords = line.split(":", 1)[1].strip()
             elif line.startswith("- 링크:"):
                 link = line.split(":", 1)[1].strip()
-        
+
+        if not content:
+            print(f"  [경고] '{title}' — 내용/초록 없음, 분류 정확도 낮아질 수 있음")
+
         items.append({
             "type": type_,
             "title": title,
             "content": content,
             "keywords": keywords,
             "practical_tip": practical_tip,
-            "link": link
+            "link": link,
+            "source": "내부"
         })
-        
+
+    if skipped:
+        print(f"  - 파싱 실패 블록 {skipped}개 건너뜀 (형식 확인 필요) ⚠️")
+
     return items
 
 
@@ -268,6 +290,26 @@ def classify_items(items):
     return grouped
 
 
+def enrich_facts(facts):
+    """[에이전트 2] LLM 보강 에이전트: practical_tip이 없는 항목에 Gemini 요약/팁을 채운다."""
+    if not (USE_LLM and os.environ.get("GEMINI_API_KEY")):
+        print("-> LLM 보강 건너뜀 (USE_LLM=False 또는 API 키 없음)")
+        return facts
+
+    print(f"-> [에이전트 2] LLM 보강 중... (최대 {LLM_CALL_LIMIT}건, 비용 통제)")
+    boosted = 0
+    for f in facts:
+        if boosted >= LLM_CALL_LIMIT:
+            break
+        if f.get("practical_tip", "") in ("추후 분석", "", None):
+            _, tip = summarize_with_gemini(f.get("type", ""), f.get("title", ""), f.get("content", ""))
+            if tip and "실패" not in tip and "비활성화" not in tip:
+                f["practical_tip"] = tip
+                boosted += 1
+    print(f"  - {boosted}개 항목에 LLM 팁 보강 완료 ✅")
+    return facts
+
+
 def write_output(grouped):
     """선정된 항목을 바탕으로 전문가 수준의 카테고리별 브리핑 텍스트를 작성합니다."""
     lines = []
@@ -299,6 +341,223 @@ def write_output(grouped):
     lines.append("\n===================================")
     
     return "\n".join(lines)
+
+def _render_section_items(lines, internal_items, external_items, empty_msg):
+    """섹션 내 내부/외부 자료를 구분하여 마크다운에 렌더링하는 헬퍼입니다."""
+    if internal_items:
+        for item in internal_items:
+            tip = item.get('practical_tip', '')
+            if tip in ("추후 분석", "", None, "팁 생성 실패", "LLM 비활성화"):
+                tip = item.get('content', '')[:60] + "..."
+            lines.append(f"- [{item['type']}] **{item['title']}**: {tip}")
+    else:
+        lines.append(f"- {empty_msg}")
+    
+    if external_items:
+        lines.append("\n### 📡 외부 참고 자료 (확인 필요)")
+        for item in external_items:
+            source_tag = item.get('source', '외부')
+            tip = item.get('practical_tip', '')
+            if tip in ("추후 분석", "", None, "팁 생성 실패", "LLM 비활성화"):
+                tip = item.get('content', '')[:60] + "..."
+            lines.append(f"- [{item['type']}] **{item['title']}** (출처: {source_tag}, 참고용): {tip}")
+
+
+def write_user_guides(grouped):
+    """정무현 예비 특수체육 지도자를 위한 상황/목적별 실전 가이드를 작성합니다."""
+    lines = []
+    lines.append("# 🎓 정무현 전공생을 위한 오늘의 특수체육 학습 가이드\n")
+    
+    # 섹션별 카테고리 매핑
+    section_map = [
+        {
+            "title": "## 📖 1. 전공 심화 학습 (이론 및 병태생리)",
+            "keys": ["이론_및_용어학습", "병태생리_및_질환관리"],
+            "empty_msg": "오늘 수집된 심화 학습 자료가 없습니다.",
+            "warnings": [
+                "- 논문의 연구 결과는 특정 통제된 환경에서의 결과이므로 무조건적인 일반화는 피해야 합니다.",
+                "- 교재에 나오지 않는 최신 이론은 반드시 원문을 통해 타당성을 교차 검증하세요."
+            ]
+        },
+        {
+            "title": "## 🏃\u200d♂️ 2. 실전 처방 케이스 스터디 (현장 실습 대비)",
+            "keys": ["운동처방_및_평가", "액티브에이징_및_인지심리"],
+            "empty_msg": "오늘 수집된 실전 처방 자료가 없습니다.",
+            "warnings": [
+                "- 이론적 처방을 실제 시니어 회원에게 적용할 때는 개인별 체력 수준과 금기 사항(안전) 파악이 최우선되어야 합니다.",
+                "- 입력 자료에 부작용이나 주의사항이 빠져 있다면, 임의로 확정하지 말고 실습 전에 질문하여 보완하세요."
+            ]
+        },
+        {
+            "title": "## 📰 3. 특수체육 업계 동향 (정책 및 커뮤니티)",
+            "keys": ["지도론_및_정책동향", "기타"],
+            "empty_msg": "오늘 수집된 업계 동향 자료가 없습니다.",
+            "warnings": [
+                "- 기사에 언급된 정책이나 예산 지원 등은 지역과 시기에 따라 다르므로 섣불리 단정짓지 마세요."
+            ]
+        }
+    ]
+    
+    for section in section_map:
+        lines.append(section["title"])
+        lines.append("### 추천 학습 가이드")
+        
+        # 해당 섹션의 모든 항목을 모아서 내부/외부 분리
+        all_items = []
+        for key in section["keys"]:
+            all_items.extend(grouped.get(key, []))
+        
+        internal = [i for i in all_items if i.get("source", "내부") == "내부"]
+        external = [i for i in all_items if i.get("source", "내부") != "내부"]
+        
+        _render_section_items(lines, internal, external, section["empty_msg"])
+        
+        lines.append("\n### 주의할 점")
+        for w in section["warnings"]:
+            lines.append(w)
+        lines.append("")
+
+    lines.append("---")
+    lines.append("> 본 가이드는 학습 보조 자료입니다. 실제 운동 지도 전 개인별 체력 평가와 건강 상태 확인이 필요합니다. (ACSM 가이드라인 참고)")
+
+    return "\n".join(lines)
+
+
+def save_user_guides(guides, path="output_user_guide.md"):
+    """작성된 실전 가이드를 마크다운 파일로 저장합니다."""
+    output_path = Path(path)
+    output_path.write_text(guides, encoding="utf-8")
+
+
+def review_guides_with_rules(guides):
+    """규칙 기반으로 실전 가이드에 누락된 정보나 위험한 단정 표현이 없는지 점검합니다."""
+    report = []
+    report.append("# 🔍 검토자 에이전트 리포트\n")
+    report.append("> 검토 방식: **규칙 기반 체크리스트**\n")
+    report.append("## 📋 체크리스트 점검 결과")
+    
+    # 1. 핵심 정보 및 행동 점검
+    if "오늘 수집된" in guides and "자료가 없습니다" in guides:
+        report.append("- [⚠️ 주의] 일부 섹션에 수집된 자료가 없습니다. (핵심 정보 부족 가능성)")
+    else:
+        report.append("- [✅ 통과] 모든 섹션에 추천/해야 할 일(행동)이 포함되어 있습니다.")
+        
+    # 2. 대상 불분명 확인
+    if "정무현 전공생" in guides or "특수체육 학습 가이드" in guides:
+        report.append("- [✅ 통과] 안내 대상(특수체육 전공생/예비 지도자)이 명확합니다.")
+    else:
+        report.append("- [⚠️ 주의] 안내 대상이 누구인지 불분명합니다.")
+        
+    # 3. 위험한 단정 표현 점검 — '주의할 점' 섹션은 경고 문구이므로 검사 대상에서 제외
+    danger_words = ["반드시", "무조건", "항상", "완벽한", "100%", "모든 사람에게"]
+    in_warning = False
+    check_lines = []
+    for line in guides.split('\n'):
+        if '주의할 점' in line:
+            in_warning = True
+        elif line.startswith('##'):
+            in_warning = False
+        if not in_warning:
+            check_lines.append(line)
+    check_text = '\n'.join(check_lines)
+
+    found_dangers = [word for word in danger_words if word in check_text]
+
+    if found_dangers:
+        report.append(f"- [⚠️ 주의] 추천 본문에 단정적인 표현 발견: {', '.join(found_dangers)}")
+    else:
+        report.append("- [✅ 통과] 추천 본문에 위험하거나 단정적인 표현이 발견되지 않았습니다.")
+    
+    # 4. 외부 참고 자료 구분 확인
+    if "📡 외부 참고 자료" in guides:
+        report.append("- [✅ 통과] 외부 도구 결과가 내부 자료와 구분되어 표시되었습니다.")
+    
+    report.append("\n## 📝 최종 권고사항")
+    report.append("- 제공된 가이드는 보조 수단입니다. 실제 현장 실습 및 처방 전에는 전문가와 논의하세요.")
+        
+    return "\n".join(report)
+
+
+def review_guides_with_llm(guides):
+    """Gemini API를 활용하여 실전 가이드를 4가지 기준으로 검토합니다."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("  - GEMINI_API_KEY 없음 → 규칙 기반 검토로 전환")
+        return None
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    
+    prompt = f"""
+    당신은 시니어 스포츠·체육 학습 가이드의 전문 검토자입니다.
+    아래 가이드를 읽고, 다음 4가지 기준으로 점검하세요.
+
+    검토 기준:
+    1. 입력 자료에 없는 내용을 단정했는가
+    2. 핵심 정보가 빠졌는가
+    3. 사용자가 해야 할 일이 보이는가
+    4. 위험한 표현이 있는가
+
+    가이드 전문:
+    {guides}
+
+    출력 규칙 (반드시 JSON 형식, 백틱 없이 순수 JSON만 출력):
+    {{
+      "unfounded_claims": "입력 자료에 없는 내용을 단정한 부분이 있다면 구체적으로 지적. 없으면 '발견되지 않음'",
+      "missing_info": "빠진 핵심 정보가 있다면 구체적으로 지적. 없으면 '발견되지 않음'",
+      "action_visible": "사용자가 해야 할 일(행동)이 명확한지 여부. 명확하면 '명확함', 아니면 개선 포인트 제시",
+      "dangerous_expressions": "위험하거나 단정적인 표현이 있다면 구체적으로 지적. 없으면 '발견되지 않음'"
+    }}
+    """
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"}
+    }
+    
+    ctx = _make_ssl_context()
+    req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    
+    try:
+        time.sleep(2)
+        response = urllib.request.urlopen(req, context=ctx, timeout=20)
+        res_data = json.loads(response.read())
+        text_res = res_data['candidates'][0]['content']['parts'][0]['text']
+        text_res = text_res.replace('```json', '').replace('```', '').strip()
+        result = json.loads(text_res)
+        
+        report = []
+        report.append("# 🔍 검토자 에이전트 리포트\n")
+        report.append("> 검토 방식: **Gemini API (LLM 보조 검토)**\n")
+        report.append("## 📋 LLM 검토 결과")
+        
+        labels = {
+            "unfounded_claims": "근거 없는 단정",
+            "missing_info": "핵심 정보 누락",
+            "action_visible": "행동 명확성",
+            "dangerous_expressions": "위험한 표현"
+        }
+        for key, label in labels.items():
+            value = result.get(key, "확인 불가")
+            icon = "✅" if "발견되지 않음" in str(value) or "명확" in str(value) else "⚠️"
+            report.append(f"- [{icon}] **{label}**: {value}")
+        
+        report.append("\n## 📝 최종 권고사항")
+        report.append("- LLM 검토 결과는 보조 의견입니다. 최종 판단은 사용자가 직접 하세요.")
+        
+        return "\n".join(report)
+    except Exception as e:
+        print(f"  - Gemini 검토 API 오류: {e} → 규칙 기반 검토로 전환")
+        return None
+
+
+def review_guides(guides):
+    """검토자 에이전트 라우터. USE_LLM_REVIEW 플래그에 따라 분기하고, 실패 시 규칙 기반으로 fallback합니다."""
+    if USE_LLM_REVIEW:
+        result = review_guides_with_llm(guides)
+        if result is not None:
+            return result
+        print("  - LLM 검토 실패 → 규칙 기반 검토로 fallback")
+    return review_guides_with_rules(guides)
 
 
 def main():
@@ -373,62 +632,74 @@ def main():
 """
 
     print(f"-> 설정: USE_LLM={USE_LLM}, USE_EXTERNAL={USE_EXTERNAL}, INTERNAL_SAMPLE_SIZE={INTERNAL_SAMPLE_SIZE}")
-    print("1. 자료 추출 중...")
 
-    # 베이스: 내부 자료 풀 (규칙 기반 추출 - 외부 도구가 실패해도 동작)
+    # [에이전트 1] 핵심 정보 추출
+    print("\n[에이전트 1] 자료 추출 중...")
     all_internal = extract_facts(SAMPLE_INPUT)
-    # 매 실행마다 다른 결과가 나오도록 풀에서 무작위 샘플링
-    sample_n = min(INTERNAL_SAMPLE_SIZE, len(all_internal))
-    facts = random.sample(all_internal, sample_n)
-    print(f"  - 내부 풀 {len(all_internal)}개에서 {sample_n}개 무작위 추출 ✅")
 
-    # 부가: 외부 도구로 보강 (실패해도 베이스 facts는 유지)
+    if RANDOM_SEED is not None:
+        random.seed(RANDOM_SEED)
+
+    # 이론/용어: 큐레이션된 학습 자료로 항상 포함, 링크는 불필요
+    theory_vocab = [i for i in all_internal if i["type"] in ("이론", "용어")]
+    for item in theory_vocab:
+        item["link"] = "링크 없음"
+    theory_n = min(THEORY_SAMPLE_SIZE, len(theory_vocab))
+    facts = random.sample(theory_vocab, theory_n)
+    print(f"  - 이론/용어 {theory_n}개 추출 ✅")
+
+    # 논문/뉴스/케이스: 외부 데이터가 있으면 외부 사용, 없으면 내부로 보충
     if USE_EXTERNAL:
-        print("-> 외부 API에서 보조 데이터를 가져오는 중...")
-        external_facts = fetch_external_context()
+        print("  - 외부 API에서 보조 데이터 가져오는 중...")
+        external_facts, ext_status = fetch_external_context()
+        for source, state in ext_status.items():
+            print(f"    [{source}] {state}")
         if external_facts:
             facts.extend(external_facts)
             print(f"  - 외부 도구에서 {len(external_facts)}개 항목 추가 ✅")
         else:
-            print("  - 외부 데이터 없음 (베이스 자료로 진행) ⚠️")
+            other_internal = [i for i in all_internal if i["type"] not in ("이론", "용어")]
+            other_n = min(INTERNAL_SAMPLE_SIZE - theory_n, len(other_internal))
+            facts.extend(random.sample(other_internal, other_n))
+            print(f"  - 외부 데이터 없음, 내부 샘플 {other_n}개로 보충 ⚠️")
     else:
-        print("-> 외부 도구 비활성화 (USE_EXTERNAL=False)")
+        other_internal = [i for i in all_internal if i["type"] not in ("이론", "용어")]
+        other_n = min(INTERNAL_SAMPLE_SIZE - theory_n, len(other_internal))
+        facts.extend(random.sample(other_internal, other_n))
+        print(f"  - 외부 도구 비활성화, 내부 샘플 {other_n}개 추가")
 
-    # LLM 보강: practical_tip이 비어있는 내부 자료에도 Gemini 요약/팁 적용
-    # 무료 티어 Rate Limit(분당 10회) 회피를 위해 보강 항목 수를 제한한다.
-    LLM_BOOST_LIMIT = 2
-    if USE_LLM and os.environ.get("GEMINI_API_KEY"):
-        print(f"-> LLM으로 내부 자료의 요약/팁 보강 중... (최대 {LLM_BOOST_LIMIT}건)")
-        boosted = 0
-        for f in facts:
-            if boosted >= LLM_BOOST_LIMIT:
-                break
-            if f.get("practical_tip", "") in ("추후 분석", "", None):
-                _, tip = summarize_with_gemini(f.get("type", ""), f.get("title", ""), f.get("content", ""))
-                if tip and "실패" not in tip and "비활성화" not in tip:
-                    f["practical_tip"] = tip
-                    boosted += 1
-        print(f"  - {boosted}개 항목에 LLM 팁 보강 완료 ✅")
-        
     print("\n=== facts ===")
     for f in facts:
         print(f)
-    print("\n")
-    
-    print("-> output.md 파일에 Markdown 표를 저장합니다...")
+
+    # [에이전트 2] LLM 보강
+    facts = enrich_facts(facts)
+
     save_markdown_table(facts)
-    print("✅ output.md 저장 완료!\n")
-    
-    print("2. 관련성 점수 분류 및 선정 중...")
+    print("  - output.md 저장 완료 ✅")
+
+    # [에이전트 3] 분류
+    print("\n[에이전트 3] 분류 중...")
     grouped = classify_items(facts)
     print("=== grouped ===")
     print(grouped)
-    print("\n")
-    
-    print("3. 브리핑 결과 생성 중...")
+
+    # [에이전트 4] 최종 출력 작성
+    print("\n[에이전트 4] 최종 출력 작성 중...")
     result = write_output(grouped)
     print("=== result ===")
     print(result)
+    guides = write_user_guides(grouped)
+    save_user_guides(guides)
+    print("  - output_user_guide.md 저장 완료 ✅")
+
+    # [에이전트 5] 검토자
+    print("\n[에이전트 5] 검토자 점검 중...")
+    review_report = review_guides(guides)
+    print("=== review_report ===")
+    print(review_report)
+    Path("review_report.md").write_text(review_report, encoding="utf-8")
+    print("  - review_report.md 저장 완료 ✅")
 
 
 if __name__ == "__main__":
