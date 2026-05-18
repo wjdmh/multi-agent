@@ -1,24 +1,38 @@
 # 🎓 정무현 전공생을 위한 오늘의 특수체육 학습 가이드
 
+## 📌 오늘의 핵심
+
+1. [논문] **Immediate effects of stretching and eccentric exercise on fl** → [원문](https://pubmed.ncbi.nlm.nih.gov/42142185/)
+   [규칙 기반] 근감소증·편심성 운동·유연성 관련 무작위 대조 시험(RCT)
+2. [논문] **Vascular and musculoskeletal interactions: structure, functi** → [원문](https://pubmed.ncbi.nlm.nih.gov/42142231/)
+   [규칙 기반] 근감소증·골다공증 관련 연구
+3. [뉴스] **[부천시] 어르신 건강 책임질 ‘튼튼시니어 운동교실’ 운영 - 팝업뉴스** → [원문](https://news.google.com/rss/articles/CBMiigFBVV95cUxPYWtjVVBGeElFQUprZTBNaHFsbHFndzhQS2p6ZmF6M0ZZOUJBNWljTGo5QmN2SVdWbTVWRldjTnNzX0RRWTlRUVY1RkhnZFZsRGE5ZUotbXh1NWZjR1dKNk5IS1JsbGRoQkl5dTBaN0JVMTV5SmM2MGZ1dnVlcURWdXp6MHYwWWh3bHc?oc=5)
+   지역사회 노인들의 건강 증진을 위해 지자체가 주도하는 운동교실 운영은 접근성을 높여 운동 참여율을 향상시킬 수 있는 효과적인 전략임을 기억하세요.
+
 ## 📖 1. 전공 심화 학습 (이론 및 병태생리)
 ### 추천 학습 가이드
-- [용어] **gait speed**: 보행속도 1.0m/s 미만 시니어에게는 하체 근력(스쿼트, 런지), 파워(의자에서 일어서기 빠르게), 그리고 균형 훈련(한 발 서기)을 복합적으로 구성하여 주 2-3회, 중강도(RPE 12-14)로 점진적 부하를 적용하며 지도해야 합니다.
-- [이론] **ACSM 노인 운동 가이드라인 (Aerobic)**: 현장 지도 시, 어르신들에게 '약간 힘들지만 대화는 가능한 정도(RPE 5-6)'를 인지시키며 주 5일 이상 30분 중강도 걷기나 고정식 자전거 운동을 지도하고, 개인별 컨디션을 고려한 점진적 증량을 통해 안전하게 심폐 기능을 향상시킬 수 있도록 유도해야 합니다.
-- [용어] **balance training**: balance training = 균형훈련. 한 발 서기, 태극권, BOSU 등. 시니어 낙상예방에 주 2~...
+- [용어] **gait speed**
+- [이론] **ACSM 노인 운동 가이드라인 (Aerobic)**
+  - 핵심 수치: RPE 5~6, 30분, 20분
+- [용어] **balance training**
+  - 핵심 수치: 주 2~3회
 
 ### 주의할 점
 - 논문의 연구 결과는 특정 통제된 환경에서의 결과이므로 무조건적인 일반화는 피해야 합니다.
 - 교재에 나오지 않는 최신 이론은 반드시 원문을 통해 타당성을 교차 검증하세요.
 
 ## 🏃‍♂️ 2. 실전 처방 케이스 스터디 (현장 실습 대비)
-### 추천 학습 가이드
-- 오늘 수집된 실전 처방 자료가 없습니다.
 
-### 📡 외부 참고 자료 (확인 필요)
-- [논문] **Vascular and musculoskeletal interactions: structure, function, and therapeutic strategies for sarcopenia and osteoporosis.** (출처: 외부(PubMed), 참고용): ...
-- [논문] **Immediate effects of stretching and eccentric exercise on flexibility, stiffness, and strength in older adults with hamstring tightness and possible sarcopenia: a randomized controlled trial.** (출처: 외부(PubMed), 참고용): ...
-- [뉴스] **[부천시] 어르신 건강 책임질 ‘튼튼시니어 운동교실’ 운영 - 팝업뉴스** (출처: 외부(Google News), 참고용): ...
-- [뉴스] **파킨슨병 시니어에게 피클볼이 최적의 운동으로 떠오르는 이유 - 캐어유 뉴스** (출처: 외부(Google News), 참고용): ...
+### 📡 외부 참고 자료
+- [논문] **Immediate effects of stretching and eccentric exercise on flexibility, stiffness, and strength in older adults with hamstring tightness and possible sarcopenia: a randomized controlled trial.** (출처: 외부(PubMed)) → [원문](https://pubmed.ncbi.nlm.nih.gov/42142185/)
+  - [규칙 기반] 근감소증·편심성 운동·유연성 관련 무작위 대조 시험(RCT)
+- [논문] **Vascular and musculoskeletal interactions: structure, function, and therapeutic strategies for sarcopenia and osteoporosis.** (출처: 외부(PubMed)) → [원문](https://pubmed.ncbi.nlm.nih.gov/42142231/)
+  - [규칙 기반] 근감소증·골다공증 관련 연구
+- [뉴스] **[부천시] 어르신 건강 책임질 ‘튼튼시니어 운동교실’ 운영 - 팝업뉴스** (출처: 외부(Google News)) → [원문](https://news.google.com/rss/articles/CBMiigFBVV95cUxPYWtjVVBGeElFQUprZTBNaHFsbHFndzhQS2p6ZmF6M0ZZOUJBNWljTGo5QmN2SVdWbTVWRldjTnNzX0RRWTlRUVY1RkhnZFZsRGE5ZUotbXh1NWZjR1dKNk5IS1JsbGRoQkl5dTBaN0JVMTV5SmM2MGZ1dnVlcURWdXp6MHYwWWh3bHc?oc=5)
+  - 부천시에서 어르신들의 건강 증진을 목표로 ‘튼튼시니어 운동교실’을 운영한다는 뉴스입니다. 이는 지역사회 기반의 노인 건강 관리 프로그램의 일환으로, 어르신들의 신체 활동 증진과 건강 유지에 기여할 것으로 보입니다.
+  - 📌 지역사회 노인들의 건강 증진을 위해 지자체가 주도하는 운동교실 운영은 접근성을 높여 운동 참여율을 향상시킬 수 있는 효과적인 전략임을 기억하세요.
+- [뉴스] **파킨슨병 시니어에게 피클볼이 최적의 운동으로 떠오르는 이유 - 캐어유 뉴스** (출처: 외부(Google News)) → [원문](https://news.google.com/rss/articles/CBMibEFVX3lxTE9pcGZ4MFYwa3FjSlZiNi1SX0YzNXVGSDJvZVZValBsZ25RMnNrZUMwX3hfcW5PeGVYM3AySlBRTGpfQTZqMS1pbEREUVl4UksxeDQzUEtnSThVVFY1a0ZIV290Y3BhbzAyRFZraA?oc=5)
+  - 원문 링크에서 최신 시니어 스포츠 동향을 확인하세요.
 
 ### 주의할 점
 - 이론적 처방을 실제 시니어 회원에게 적용할 때는 개인별 체력 수준과 금기 사항(안전) 파악이 최우선되어야 합니다.

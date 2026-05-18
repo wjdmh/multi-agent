@@ -15,7 +15,33 @@ USE_LLM_REVIEW = False  # True로 바꾸면 Gemini API로 검토 보조
 THEORY_SAMPLE_SIZE = 3    # 이론/용어: 항상 포함할 항목 수 (큐레이션된 학습 자료)
 INTERNAL_SAMPLE_SIZE = 5  # 외부 데이터 없을 때 내부 샘플로 보충할 총 항목 수
 RANDOM_SEED = 42          # None으로 바꾸면 실행마다 다른 결과 (데모용)
-LLM_CALL_LIMIT = 2        # Gemini API 비용 통제: 수집 후 보강 최대 호출 횟수
+LLM_CALL_LIMIT = 6        # Gemini API 비용 통제: 수집 후 보강 최대 호출 횟수
+TOP_N = 3                 # 오늘의 핵심 상단 요약에 표시할 항목 수
+
+# 규칙 기반 보강용 판단 기준 (LLM 없을 때도 동작)
+TERM_GLOSSARY = {
+    "sarcopenia": "근감소증", "resistance training": "저항운동",
+    "eccentric exercise": "편심성 운동", "flexibility": "유연성",
+    "osteoporosis": "골다공증", "older adults": "노인",
+    "elderly": "노인", "stretching": "스트레칭",
+    "balance": "균형", "gait": "보행", "frailty": "노쇠",
+    "muscle": "근육", "strength": "근력", "aerobic": "유산소",
+    "fall prevention": "낙상 예방", "physical activity": "신체활동",
+}
+STUDY_TYPE_RULES = {
+    "randomized controlled trial": "무작위 대조 시험(RCT)",
+    "randomized": "무작위 대조 시험(RCT)",
+    "systematic review": "체계적 문헌 고찰",
+    "meta-analysis": "메타분석",
+    "cohort": "코호트 연구",
+    "cross-sectional": "횡단 연구",
+}
+DOMAIN_KEYWORDS = [
+    "sarcopenia", "elderly", "older adults", "resistance training",
+    "exercise intervention", "근감소증", "노인", "시니어", "운동처방",
+    "저항운동", "유산소", "낙상", "근력", "보행속도", "체력",
+    "ACSM", "노화", "만성질환", "frailty", "노쇠",
+]
 
 def _make_ssl_context():
     """macOS 시스템 인증서 부재 환경에서도 SSL 검증을 정상 수행하도록 certifi를 우선 사용한다."""
@@ -48,22 +74,22 @@ def summarize_with_gemini(type_, title, content):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     
     prompt = f"""
-    당신은 최고 수준의 [노인체육 지도자]이자 [운동처방사]입니다. 만성질환과 근감소증 등 노화의 생리학적 기전을 완벽히 이해하고 있으며, 실제 현장에서 시니어 회원을 안전하고 효과적으로 지도하는 실무 감각을 갖추고 있습니다.
+당신은 노인체육 지도자이자 운동처방사입니다.
+아래 자료를 분석하여 특수체육 전공생이 아침 공부에 바로 활용할 수 있는 정보를 JSON으로 출력하세요.
+제목이 영어라면 반드시 한국어로 설명하세요.
 
-    태스크:
-    제공된 논문/뉴스의 제목과 내용을 분석하여, 현장 지도자들이 즉시 적용할 수 있는 핵심 요약과 운동 처방 팁을 도출하세요.
+자료 유형: {type_}
+제목: {title}
+내용: {content if content else "(내용 없음 - 제목만으로 분석)"}
 
-    입력 데이터:
-    - 자료 유형: {type_}
-    - 제목: {title}
-    - 내용: {content}
-
-    출력 규칙 (반드시 JSON 형식, 백틱 없이 순수 JSON만 출력):
-    {{
-      "summary": "논문/뉴스의 핵심 결과를 생리학적/운동학적 관점에서 1~2줄로 전문적으로 요약할 것.",
-      "practical_tip": "실제 시니어 체육 현장(복지관 등)에서 적용할 구체적인 운동 처방 가이드(강도, 주의사항 등)를 1줄로 제시할 것."
-    }}
-    """
+출력 규칙 (백틱 없이 순수 JSON만):
+{{
+  "korean_summary": "한국어 2~3문장. 영어 제목이면 번역 포함. 핵심 연구결과나 뉴스 내용.",
+  "why_important": "노인체육/운동처방 분야에서 이 자료가 왜 중요한지 1문장.",
+  "study_point": "오늘 이것만 기억하세요 — 핵심 1가지 (수치나 원칙 포함).",
+  "field_tip": "복지관·보건소 현장에서 바로 쓸 수 있는 적용법 1문장 (강도·빈도·주의사항 포함)."
+}}
+"""
     
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -82,10 +108,14 @@ def summarize_with_gemini(type_, title, content):
         # 백틱 등 마크다운 잔재 제거
         text_res = text_res.replace('```json', '').replace('```', '').strip()
         result = json.loads(text_res)
-        return result.get("summary", "요약 생성 실패"), result.get("practical_tip", "팁 생성 실패")
+        # 필수 필드 검증
+        required = ("korean_summary", "why_important", "study_point", "field_tip")
+        if not all(result.get(k) for k in required):
+            raise ValueError(f"필수 필드 누락: {[k for k in required if not result.get(k)]}")
+        return result
     except Exception as e:
         print(f"    - Gemini API 오류: {e}")
-        return "뉴스/논문 원문을 확인해주세요.", "추후 분석 (API 호출 실패)"
+        return None
 
 def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로그램", pubmed_query="sarcopenia exercise intervention OR older adults resistance training"):
     """구글 뉴스 및 PubMed에서 보조 데이터를 가져옵니다. (외부 도구 - 보강 정보)
@@ -258,6 +288,27 @@ def save_markdown_table(facts):
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def score_relevance(item):
+    """항목의 도메인 관련성과 보강 필요도를 0~10점으로 평가한다.
+    점수는 relevance_score 필드로 저장되어 이후 단계에서 추적 가능하다."""
+    score = 0
+    text = (item.get("title", "") + " " + item.get("content", "") + " " + item.get("keywords", "")).lower()
+
+    # 도메인 키워드 매칭 (최대 4점)
+    score += min(sum(1 for kw in DOMAIN_KEYWORDS if kw.lower() in text), 4)
+    # 내용 없음 → 보강 필요 (3점)
+    if not item.get("content", ""):
+        score += 3
+    # 외부 자료 → 신선도 가산 (2점)
+    if item.get("source", "내부") != "내부":
+        score += 2
+    # 내부 이론/용어이고 이미 내용 있음 → 우선순위 낮춤 (-1점)
+    if item.get("type") in ("이론", "용어") and item.get("content", ""):
+        score -= 1
+
+    return max(0, score)
+
+
 def classify_items(items):
     """전문가 수준의 5대 카테고리로 항목을 분류합니다."""
     grouped = {
@@ -290,23 +341,68 @@ def classify_items(items):
     return grouped
 
 
-def enrich_facts(facts):
-    """[에이전트 2] LLM 보강 에이전트: practical_tip이 없는 항목에 Gemini 요약/팁을 채운다."""
-    if not (USE_LLM and os.environ.get("GEMINI_API_KEY")):
-        print("-> LLM 보강 건너뜀 (USE_LLM=False 또는 API 키 없음)")
-        return facts
+def enrich_rule_based(item):
+    """LLM 없이 규칙 기반으로 항목을 보강한다. TERM_GLOSSARY와 STUDY_TYPE_RULES가 판단 기준."""
+    title_lower = item.get("title", "").lower()
+    content = item.get("content", "")
+    type_ = item.get("type", "")
 
-    print(f"-> [에이전트 2] LLM 보강 중... (최대 {LLM_CALL_LIMIT}건, 비용 통제)")
-    boosted = 0
+    if type_ == "논문" and not content:
+        # 연구 유형 감지 (STUDY_TYPE_RULES 기준)
+        study_type = next((v for k, v in STUDY_TYPE_RULES.items() if k in title_lower), "연구")
+        # 도메인 키워드 번역 (TERM_GLOSSARY 기준)
+        found = [v for k, v in TERM_GLOSSARY.items() if k in title_lower]
+        topics = "·".join(found[:3]) if found else "노인 운동"
+        item["content"] = f"[규칙 기반] {topics} 관련 {study_type}"
+        item["practical_tip"] = "원문 링크에서 구체적인 처방 수치를 확인하세요."
+
+    elif type_ == "뉴스" and not content:
+        item["practical_tip"] = "원문 링크에서 최신 시니어 스포츠 동향을 확인하세요."
+
+    elif type_ in ("이론", "용어") and content:
+        # 내용에서 처방 수치 추출 (정규식)
+        import re
+        nums = re.findall(r'주\s*\d+[~\-]?\d*회|RPE\s*[\d~\-]+|\d+분|\d+RM|\d+%', content)
+        if nums:
+            item["practical_tip"] = f"핵심 수치: {', '.join(nums[:4])}"
+
+    return item
+
+
+def enrich_facts(facts):
+    """[에이전트 2] 보강 에이전트: relevance_score 순으로 정렬 후 LLM 또는 규칙 기반으로 보강."""
+    # 1. 관련성 점수 계산 및 저장 (추적 가능)
     for f in facts:
-        if boosted >= LLM_CALL_LIMIT:
-            break
+        f["relevance_score"] = score_relevance(f)
+    facts.sort(key=lambda f: f["relevance_score"], reverse=True)
+
+    # 2. LLM 또는 규칙 기반 분기
+    if USE_LLM and os.environ.get("GEMINI_API_KEY"):
+        print(f"-> [에이전트 2] LLM 보강 중... (최대 {LLM_CALL_LIMIT}건, relevance_score 순)")
+        boosted = 0
+        for f in facts:
+            if boosted >= LLM_CALL_LIMIT:
+                break
+            if f.get("practical_tip", "") in ("추후 분석", "", None):
+                result = summarize_with_gemini(f.get("type", ""), f.get("title", ""), f.get("content", ""))
+                if result:
+                    f["content"] = result["korean_summary"]
+                    f["why_important"] = result["why_important"]
+                    f["study_point"] = result["study_point"]
+                    f["practical_tip"] = result["field_tip"]
+                    boosted += 1
+        print(f"  - {boosted}개 항목 LLM 보강 완료 ✅")
+    else:
+        print("-> [에이전트 2] 규칙 기반 보강 (LLM 없음)")
+        for f in facts:
+            enrich_rule_based(f)
+        print(f"  - {len(facts)}개 항목 규칙 기반 보강 완료 ✅")
+
+    # 3. LLM 후 미보강 항목은 규칙으로 fallback
+    for f in facts:
         if f.get("practical_tip", "") in ("추후 분석", "", None):
-            _, tip = summarize_with_gemini(f.get("type", ""), f.get("title", ""), f.get("content", ""))
-            if tip and "실패" not in tip and "비활성화" not in tip:
-                f["practical_tip"] = tip
-                boosted += 1
-    print(f"  - {boosted}개 항목에 LLM 팁 보강 완료 ✅")
+            enrich_rule_based(f)
+
     return facts
 
 
@@ -346,27 +442,57 @@ def _render_section_items(lines, internal_items, external_items, empty_msg):
     """섹션 내 내부/외부 자료를 구분하여 마크다운에 렌더링하는 헬퍼입니다."""
     if internal_items:
         for item in internal_items:
+            study_point = item.get('study_point', '')
             tip = item.get('practical_tip', '')
-            if tip in ("추후 분석", "", None, "팁 생성 실패", "LLM 비활성화"):
-                tip = item.get('content', '')[:60] + "..."
-            lines.append(f"- [{item['type']}] **{item['title']}**: {tip}")
-    else:
+            content = item.get('content', '')
+            display = study_point or tip or content[:60]
+            link = item.get('link', '')
+            link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
+            lines.append(f"- [{item['type']}] **{item['title']}**{link_md}")
+            if display and display not in ("추후 분석", "팁 생성 실패"):
+                lines.append(f"  - {display}")
+    elif not external_items:
         lines.append(f"- {empty_msg}")
-    
+
     if external_items:
-        lines.append("\n### 📡 외부 참고 자료 (확인 필요)")
+        lines.append("\n### 📡 외부 참고 자료")
         for item in external_items:
             source_tag = item.get('source', '외부')
-            tip = item.get('practical_tip', '')
-            if tip in ("추후 분석", "", None, "팁 생성 실패", "LLM 비활성화"):
-                tip = item.get('content', '')[:60] + "..."
-            lines.append(f"- [{item['type']}] **{item['title']}** (출처: {source_tag}, 참고용): {tip}")
+            # 새 필드 우선, 없으면 기존 필드 fallback
+            summary = item.get('content', '') or item.get('practical_tip', '')
+            study_point = item.get('study_point', '')
+            link = item.get('link', '')
+            link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
+            lines.append(f"- [{item['type']}] **{item['title']}** (출처: {source_tag}){link_md}")
+            if summary:
+                lines.append(f"  - {summary[:120]}")
+            if study_point:
+                lines.append(f"  - 📌 {study_point}")
 
 
-def write_user_guides(grouped):
+def write_user_guides(grouped, facts=None):
     """정무현 예비 특수체육 지도자를 위한 상황/목적별 실전 가이드를 작성합니다."""
     lines = []
     lines.append("# 🎓 정무현 전공생을 위한 오늘의 특수체육 학습 가이드\n")
+
+    # TOP N 요약 — relevance_score 상위 항목 중 논문/뉴스 우선
+    if facts:
+        top_candidates = sorted(
+            [f for f in facts if f.get("type") in ("논문", "뉴스")],
+            key=lambda f: f.get("relevance_score", 0), reverse=True
+        )[:TOP_N]
+        if not top_candidates:
+            top_candidates = sorted(facts, key=lambda f: f.get("relevance_score", 0), reverse=True)[:TOP_N]
+
+        lines.append("## 📌 오늘의 핵심\n")
+        for i, item in enumerate(top_candidates, 1):
+            sp = item.get("study_point") or item.get("content", "")[:60]
+            link = item.get("link", "")
+            link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
+            lines.append(f"{i}. [{item['type']}] **{item['title'][:60]}**{link_md}")
+            if sp:
+                lines.append(f"   {sp}")
+        lines.append("")
     
     # 섹션별 카테고리 매핑
     section_map = [
@@ -400,8 +526,7 @@ def write_user_guides(grouped):
     
     for section in section_map:
         lines.append(section["title"])
-        lines.append("### 추천 학습 가이드")
-        
+
         # 해당 섹션의 모든 항목을 모아서 내부/외부 분리
         all_items = []
         for key in section["keys"]:
@@ -409,7 +534,10 @@ def write_user_guides(grouped):
         
         internal = [i for i in all_items if i.get("source", "내부") == "내부"]
         external = [i for i in all_items if i.get("source", "내부") != "내부"]
-        
+
+        if internal or not external:
+            lines.append("### 추천 학습 가이드")
+
         _render_section_items(lines, internal, external, section["empty_msg"])
         
         lines.append("\n### 주의할 점")
@@ -448,8 +576,9 @@ def review_guides_with_rules(guides):
     else:
         report.append("- [⚠️ 주의] 안내 대상이 누구인지 불분명합니다.")
         
-    # 3. 위험한 단정 표현 점검 — '주의할 점' 섹션은 경고 문구이므로 검사 대상에서 제외
-    danger_words = ["반드시", "무조건", "항상", "완벽한", "100%", "모든 사람에게"]
+    # 3. 위험한 단정 표현 점검
+    # '주의할 점' 섹션(경고 문구)과 '📌'로 시작하는 study_point 줄은 검사 제외
+    danger_words = ["무조건", "항상", "완벽한", "100%", "모든 사람에게"]
     in_warning = False
     check_lines = []
     for line in guides.split('\n'):
@@ -457,7 +586,7 @@ def review_guides_with_rules(guides):
             in_warning = True
         elif line.startswith('##'):
             in_warning = False
-        if not in_warning:
+        if not in_warning and not line.strip().startswith('📌'):
             check_lines.append(line)
     check_text = '\n'.join(check_lines)
 
@@ -689,7 +818,7 @@ def main():
     result = write_output(grouped)
     print("=== result ===")
     print(result)
-    guides = write_user_guides(grouped)
+    guides = write_user_guides(grouped, facts)
     save_user_guides(guides)
     print("  - output_user_guide.md 저장 완료 ✅")
 
