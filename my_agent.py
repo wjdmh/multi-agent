@@ -679,6 +679,51 @@ def review_guides_with_llm(guides):
         return None
 
 
+def send_to_telegram(guides):
+    """오늘의 핵심 요약을 텔레그램으로 전송합니다. 실패해도 기본 실행에 영향 없음."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("  - 텔레그램 설정 없음 (TELEGRAM_BOT_TOKEN/CHAT_ID 미설정)")
+        return
+
+    # 오늘의 핵심 섹션만 추출 (4096자 제한 대응)
+    lines = guides.split('\n')
+    msg_lines = []
+    in_top = False
+    for line in lines:
+        if '📌 오늘의 핵심' in line:
+            in_top = True
+        if in_top:
+            msg_lines.append(line)
+        # 핵심 섹션 끝 (다음 ## 섹션 시작)
+        if in_top and line.startswith('## ') and '핵심' not in line:
+            break
+
+    message = '\n'.join(msg_lines).strip()
+    if not message:
+        message = guides[:2000]
+
+    # 텔레그램은 Markdown 특수문자 일부를 이스케이프해야 함
+    for ch in ['[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        message = message.replace(ch, f'\\{ch}')
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({
+        "chat_id": chat_id,
+        "text": message[:4096],
+        "parse_mode": "MarkdownV2"
+    }).encode('utf-8')
+
+    ctx = _make_ssl_context()
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+    try:
+        urllib.request.urlopen(req, context=ctx, timeout=10)
+        print("  - 텔레그램 전송 완료 ✅")
+    except Exception as e:
+        print(f"  - 텔레그램 전송 실패 ⚠️: {e}")
+
+
 def review_guides(guides):
     """검토자 에이전트 라우터. USE_LLM_REVIEW 플래그에 따라 분기하고, 실패 시 규칙 기반으로 fallback합니다."""
     if USE_LLM_REVIEW:
@@ -829,6 +874,10 @@ def main():
     print(review_report)
     Path("review_report.md").write_text(review_report, encoding="utf-8")
     print("  - review_report.md 저장 완료 ✅")
+
+    # 텔레그램 전송
+    print("\n텔레그램으로 오늘의 핵심 전송 중...")
+    send_to_telegram(guides)
 
 
 if __name__ == "__main__":
