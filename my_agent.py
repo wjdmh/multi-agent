@@ -101,7 +101,6 @@ def summarize_with_gemini(type_, title, content):
     req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
     
     try:
-        time.sleep(2)  # Gemini API 연속 호출 간격 확보 (비용 및 과부하 방지)
         response = urllib.request.urlopen(req, context=ctx, timeout=15)
         res_data = json.loads(response.read())
         text_res = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -156,8 +155,16 @@ def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로
         status["google_news"] = f"success ({count}건)"
         print(f"  - 구글 뉴스 RSS 연동 성공 ✅ ({count}건)")
     except Exception as e:
-        status["google_news"] = f"failed: {type(e).__name__}"
-        print(f"  - 구글 뉴스 연동 실패 ⚠️ [{type(e).__name__}]: {e}")
+        err_str = str(e).lower()
+        if "429" in err_str or "rate" in err_str or "quota" in err_str:
+            status["google_news"] = "rate_limit"
+        elif isinstance(e, TimeoutError) or "timed out" in err_str or "timeout" in err_str:
+            status["google_news"] = "timeout"
+        elif isinstance(e, (ConnectionError, OSError)):
+            status["google_news"] = "connection_error"
+        else:
+            status["google_news"] = f"error: {type(e).__name__}"
+        print(f"  - 구글 뉴스 연동 실패 ⚠️ [{status['google_news']}]: {e}")
 
     # 2. PubMed (영어 논문)
     try:
@@ -178,11 +185,15 @@ def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로
                 article = summary_data['result'][pid]
                 title = article.get('title', '')
                 link = f"https://pubmed.ncbi.nlm.nih.gov/{pid}/"
+                # 논문 제목에서 TERM_GLOSSARY로 실제 키워드 추출
+                title_lower = title.lower()
+                extracted_kw = [v for k, v in TERM_GLOSSARY.items() if k in title_lower]
+                keywords = ", ".join(dict.fromkeys(extracted_kw)) if extracted_kw else "노인, 운동처방"
                 facts.append({
                     "type": "논문",
                     "title": title,
                     "content": "",
-                    "keywords": "근감소증, 노년기, 운동처방",
+                    "keywords": keywords,
                     "practical_tip": "추후 분석",
                     "link": link,
                     "source": "외부(PubMed)"
@@ -191,8 +202,16 @@ def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로
         status["pubmed"] = f"success ({count}건)"
         print(f"  - PubMed API 연동 성공 ✅ ({count}건)")
     except Exception as e:
-        status["pubmed"] = f"failed: {type(e).__name__}"
-        print(f"  - PubMed 연동 실패 ⚠️ [{type(e).__name__}]: {e}")
+        err_str = str(e).lower()
+        if "429" in err_str or "rate" in err_str or "quota" in err_str:
+            status["pubmed"] = "rate_limit"
+        elif isinstance(e, TimeoutError) or "timed out" in err_str or "timeout" in err_str:
+            status["pubmed"] = "timeout"
+        elif isinstance(e, (ConnectionError, OSError)):
+            status["pubmed"] = "connection_error"
+        else:
+            status["pubmed"] = f"error: {type(e).__name__}"
+        print(f"  - PubMed 연동 실패 ⚠️ [{status['pubmed']}]: {e}")
 
     return facts, status
 
@@ -384,6 +403,8 @@ def enrich_facts(facts):
             if boosted >= LLM_CALL_LIMIT:
                 break
             if f.get("practical_tip", "") in ("추후 분석", "", None):
+                if boosted > 0:  # 첫 호출 전엔 sleep 불필요, 이후 호출 간격 확보
+                    time.sleep(2)
                 result = summarize_with_gemini(f.get("type", ""), f.get("title", ""), f.get("content", ""))
                 if result:
                     f["content"] = result["korean_summary"]
@@ -603,8 +624,10 @@ def review_guides_with_rules(guides):
     
     report.append("\n## 📝 최종 권고사항")
     report.append("- 제공된 가이드는 보조 수단입니다. 실제 현장 실습 및 처방 전에는 전문가와 논의하세요.")
-        
-    return "\n".join(report)
+
+    report_str = "\n".join(report)
+    needs_refetch = "오늘 수집된" in report_str and "자료가 없습니다" in report_str
+    return report_str, needs_refetch
 
 
 def review_guides_with_llm(guides):
@@ -647,7 +670,6 @@ def review_guides_with_llm(guides):
     req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
     
     try:
-        time.sleep(2)
         response = urllib.request.urlopen(req, context=ctx, timeout=20)
         res_data = json.loads(response.read())
         text_res = res_data['candidates'][0]['content']['parts'][0]['text']
@@ -672,8 +694,10 @@ def review_guides_with_llm(guides):
         
         report.append("\n## 📝 최종 권고사항")
         report.append("- LLM 검토 결과는 보조 의견입니다. 최종 판단은 사용자가 직접 하세요.")
-        
-        return "\n".join(report)
+
+        report_str = "\n".join(report)
+        needs_refetch = "발견되지 않음" not in report_str  # LLM이 문제를 발견하면 재수집 신호
+        return report_str, needs_refetch
     except Exception as e:
         print(f"  - Gemini 검토 API 오류: {e} → 규칙 기반 검토로 전환")
         return None
@@ -725,7 +749,9 @@ def send_to_telegram(guides):
 
 
 def review_guides(guides):
-    """검토자 에이전트 라우터. USE_LLM_REVIEW 플래그에 따라 분기하고, 실패 시 규칙 기반으로 fallback합니다."""
+    """검토자 에이전트 라우터. USE_LLM_REVIEW 플래그에 따라 분기하고, 실패 시 규칙 기반으로 fallback합니다.
+    Returns: (report_str, needs_refetch) 튜플
+    """
     if USE_LLM_REVIEW:
         result = review_guides_with_llm(guides)
         if result is not None:
@@ -869,9 +895,30 @@ def main():
 
     # [에이전트 5] 검토자
     print("\n[에이전트 5] 검토자 점검 중...")
-    review_report = review_guides(guides)
+    review_report, needs_refetch = review_guides(guides)
     print("=== review_report ===")
     print(review_report)
+
+    # 피드백 루프: 자료 부족 감지 시 다른 쿼리로 1회 재수집
+    if needs_refetch and USE_EXTERNAL:
+        print("\n[검토자 → 에이전트 1] 자료 부족 감지 → 다른 쿼리로 재수집 중...")
+        extra_facts, extra_status = fetch_external_context(
+            query="노인 낙상예방 OR 시니어 재활운동",
+            pubmed_query="fall prevention elderly OR balance training older adults"
+        )
+        for source, state in extra_status.items():
+            print(f"    [{source}] {state}")
+        if extra_facts:
+            extra_facts = enrich_facts(extra_facts)
+            facts.extend(extra_facts)
+            grouped = classify_items(facts)
+            guides = write_user_guides(grouped, facts)
+            save_user_guides(guides)
+            print("  - 재수집 후 가이드 갱신 완료 ✅")
+            review_report, _ = review_guides(guides)  # 갱신된 가이드 재검토
+        else:
+            print("  - 재수집도 데이터 없음, 기존 가이드 유지 ⚠️")
+
     Path("review_report.md").write_text(review_report, encoding="utf-8")
     print("  - review_report.md 저장 완료 ✅")
 
