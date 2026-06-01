@@ -37,6 +37,9 @@ flake8>=6.1.0
 # Environment Management
 python-dotenv>=1.0.0
 
+# Streamlit UI (Week 13)
+streamlit>=1.30.0
+
 # API Clients (Phase 7 - Multi-LLM Review)
 anthropic>=0.18.0
 openai>=1.12.0
