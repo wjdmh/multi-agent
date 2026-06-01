@@ -11,10 +11,10 @@ import random
 # Week-12 선택 확장 토글 (필요 시 False로 끄면 기본 실행만 동작)
 USE_LLM = True       # Gemini로 요약/팁 보조
 USE_EXTERNAL = True  # PubMed, Google News 등 외부 도구 사용
-USE_LLM_REVIEW = False  # True로 바꾸면 Gemini API로 검토 보조
+USE_LLM_REVIEW = True   # True로 바꾸면 Gemini API로 검토 보조
 THEORY_SAMPLE_SIZE = 3    # 이론/용어: 항상 포함할 항목 수 (큐레이션된 학습 자료)
 INTERNAL_SAMPLE_SIZE = 5  # 외부 데이터 없을 때 내부 샘플로 보충할 총 항목 수
-RANDOM_SEED = 42          # None으로 바꾸면 실행마다 다른 결과 (데모용)
+RANDOM_SEED = None        # None으로 바꾸면 실행마다 다른 결과 (데모용)
 LLM_CALL_LIMIT = 6        # Gemini API 비용 통제: 수집 후 보강 최대 호출 횟수
 TOP_N = 3                 # 오늘의 핵심 상단 요약에 표시할 항목 수
 
@@ -704,48 +704,52 @@ def review_guides_with_llm(guides):
 
 
 def send_to_telegram(guides):
-    """오늘의 핵심 요약을 텔레그램으로 전송합니다. 실패해도 기본 실행에 영향 없음."""
+    """전체 학습 가이드를 텔레그램으로 분할 전송합니다. 실패해도 기본 실행에 영향 없음."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         print("  - 텔레그램 설정 없음 (TELEGRAM_BOT_TOKEN/CHAT_ID 미설정)")
         return
 
-    # 오늘의 핵심 섹션만 추출 (4096자 제한 대응)
-    lines = guides.split('\n')
-    msg_lines = []
-    in_top = False
-    for line in lines:
-        if '📌 오늘의 핵심' in line:
-            in_top = True
-        if in_top:
-            msg_lines.append(line)
-        # 핵심 섹션 끝 (다음 ## 섹션 시작)
-        if in_top and line.startswith('## ') and '핵심' not in line:
-            break
-
-    message = '\n'.join(msg_lines).strip()
-    if not message:
-        message = guides[:2000]
-
-    # 텔레그램은 Markdown 특수문자 일부를 이스케이프해야 함
-    for ch in ['[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+    # 전체 가이드 전송 (MarkdownV2 특수문자 이스케이프)
+    message = guides
+    for ch in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
         message = message.replace(ch, f'\\{ch}')
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": message[:4096],
-        "parse_mode": "MarkdownV2"
-    }).encode('utf-8')
-
     ctx = _make_ssl_context()
-    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-    try:
-        urllib.request.urlopen(req, context=ctx, timeout=10)
-        print("  - 텔레그램 전송 완료 ✅")
-    except Exception as e:
-        print(f"  - 텔레그램 전송 실패 ⚠️: {e}")
+
+    # 4096자 단위로 분할 전송 (줄 단위로 쪼개서 단어 중간 절단 방지)
+    chunks = []
+    current = []
+    current_len = 0
+    for line in message.split('\n'):
+        line_len = len(line) + 1  # +1 for newline
+        if current_len + line_len > 4096:
+            chunks.append('\n'.join(current))
+            current = [line]
+            current_len = line_len
+        else:
+            current.append(line)
+            current_len += line_len
+    if current:
+        chunks.append('\n'.join(current))
+
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, 1):
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "MarkdownV2"
+        }).encode('utf-8')
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+        try:
+            urllib.request.urlopen(req, context=ctx, timeout=10)
+            print(f"  - 텔레그램 전송 완료 ✅ ({i}/{total})")
+            if i < total:
+                time.sleep(1)  # 연속 전송 시 텔레그램 rate limit 방지
+        except Exception as e:
+            print(f"  - 텔레그램 전송 실패 ⚠️ ({i}/{total}): {e}")
 
 
 def review_guides(guides):

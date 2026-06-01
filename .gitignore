@@ -33,3 +33,4 @@ checklists/
 schema/
 CLAUDE.md
 README.md
+.playwright-cli/
