@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>my_agent.py — 작동 방식 한눈에 보기</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d29;
+    --card-border: #2a2f42;
+    --accent: #7c9cff;
+    --accent2: #ff9f7c;
+    --accent3: #7cffb2;
+    --text: #e8eaf2;
+    --muted: #9aa3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", sans-serif;
+    background: radial-gradient(circle at 20% 0%, #1a2040 0%, var(--bg) 45%);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 0 0 80px;
+  }
+  header {
+    text-align: center;
+    padding: 80px 24px 60px;
+  }
+  header .badge {
+    display: inline-block;
+    padding: 6px 16px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), #a78bfa);
+    color: #0f1117;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    margin-bottom: 20px;
+  }
+  header h1 {
+    font-size: clamp(28px, 5vw, 48px);
+    font-weight: 800;
+    background: linear-gradient(90deg, #fff, var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 14px;
+  }
+  header p {
+    color: var(--muted);
+    font-size: 17px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  .analogy {
+    max-width: 720px;
+    margin: 36px auto 0;
+    padding: 20px 28px;
+    background: linear-gradient(135deg, rgba(124,156,255,0.12), rgba(167,139,250,0.08));
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    text-align: center;
+    font-size: 16px;
+    color: var(--text);
+  }
+  .analogy span { color: var(--accent); font-weight: 700; }
+
+  .flow {
+    max-width: 980px;
+    margin: 70px auto 0;
+    padding: 0 24px;
+  }
+  .flow-title {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 36px;
+    color: var(--text);
+  }
+  .flow-diagram {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 60px;
+  }
+  .flow-node {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 12px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .flow-arrow { color: var(--muted); font-size: 18px; }
+
+  .steps {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .step {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 18px;
+    padding: 28px 30px;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.25s ease, border-color 0.25s ease;
+  }
+  .step:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+  }
+  .step::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 5px; height: 100%;
+    background: var(--step-color, var(--accent));
+  }
+  .step-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 42px; height: 42px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 17px;
+    background: var(--step-color, var(--accent));
+    color: #0f1117;
+  }
+  .step-head h3 {
+    font-size: 19px;
+    font-weight: 700;
+  }
+  .step-head .fn {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--step-color, var(--accent));
+    background: rgba(124,156,255,0.12);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  .step p {
+    color: var(--muted);
+    font-size: 15px;
+    margin-bottom: 10px;
+  }
+  .step .tag-line {
+    color: var(--text);
+    font-size: 14.5px;
+  }
+  .step .quote {
+    margin-top: 14px;
+    padding: 12px 16px;
+    background: rgba(255,255,255,0.03);
+    border-left: 3px solid var(--step-color, var(--accent));
+    border-radius: 8px;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  .step .quote b { color: var(--text); }
+
+  .summary {
+    max-width: 760px;
+    margin: 70px auto 0;
+    padding: 36px 36px;
+    background: linear-gradient(135deg, rgba(124,156,255,0.14), rgba(124,255,178,0.08));
+    border: 1px solid var(--card-border);
+    border-radius: 20px;
+    text-align: center;
+  }
+  .summary h2 {
+    font-size: 22px;
+    margin-bottom: 14px;
+  }
+  .summary p {
+    font-size: 16px;
+    color: var(--text);
+  }
+  .summary .highlight {
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  @media (min-width: 760px) {
+    .steps { grid-template-columns: 1fr 1fr; }
+    .step:nth-child(odd) { grid-column: span 1; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge">MY_AGENT.PY · WORKFLOW</div>
+  <h1>이 에이전트는 어떻게 일하는가</h1>
+  <p>입력을 모아 정리하고, 점수 매겨 줄 세우고, AI로 보강하고, 스스로 검토해서 부족하면 다시 찾아오는 — 8단계 파이프라인</p>
+  <div class="analogy">
+    💡 비유하자면, <span>"신문 스크랩 + 정리 + 검수까지 하는 비서"</span> 같은 구조입니다
+  </div>
+</header>
+
+<section class="flow">
+  <div class="flow-title">전체 흐름</div>
+  <div class="flow-diagram">
+    <div class="flow-node">자료 수집</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">중간정보 생성</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">점수·정렬·분류</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">AI 보강</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">보고서 작성</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">검토</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">(부족하면 재수집)</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">텔레그램 전송</div>
+  </div>
+
+  <div class="steps">
+
+    <div class="step" style="--step-color:#7c9cff">
+      <div class="step-head">
+        <div class="step-num">1</div>
+        <h3>자료 모으기 <span class="fn">extract_facts / fetch_external_context</span></h3>
+      </div>
+      <p>두 곳에서 자료를 가져옵니다 — 코드에 미리 넣어둔 <b>내부 샘플</b>(논문·뉴스·이론·케이스·용어)과, 구글 뉴스 RSS·PubMed에서 실시간으로 가져오는 <b>외부 자료</b>.</p>
+      <p class="tag-line">가져온 텍스트를 그대로 쓰지 않고 <code>{type, title, content, keywords...}</code> 딕셔너리로 정리합니다 — 이게 "중간 정보"입니다.</p>
+      <div class="quote">🗂️ 비유: 신문에서 기사를 오려서 "제목 / 내용 / 분야" 칸이 있는 카드에 옮겨 적는 작업</div>
+    </div>
+
+    <div class="step" style="--step-color:#ff9f7c">
+      <div class="step-head">
+        <div class="step-num">2</div>
+        <h3>중요도 점수 매기기 <span class="fn">score_relevance</span></h3>
+      </div>
+      <p>각 자료에 0~10점을 매깁니다. 도메인 키워드가 많을수록, 보강이 필요할수록, 외부 최신 자료일수록 점수가 올라갑니다.</p>
+      <p class="tag-line">점수 높은 순으로 정렬해서 <b>중요한 자료부터 처리</b>합니다.</p>
+    </div>
+
+    <div class="step" style="--step-color:#7cffb2">
+      <div class="step-head">
+        <div class="step-num">3</div>
+        <h3>AI로 보강 <span class="fn">enrich_facts</span></h3>
+      </div>
+      <p>점수 상위 6개를 LLM에 보내 한국어 요약·중요한 이유·핵심 포인트·현장 적용 팁을 받아옵니다.</p>
+      <p class="tag-line">⚙️ <b>API가 없거나 실패해도</b> 규칙 기반 보강(<code>enrich_rule_based</code>)이 대신 작동 — 실행이 멈추지 않습니다.</p>
+    </div>
+
+    <div class="step" style="--step-color:#a78bfa">
+      <div class="step-head">
+        <div class="step-num">4</div>
+        <h3>카테고리 분류 <span class="fn">classify_items</span></h3>
+      </div>
+      <p>키워드를 보고 5개 카테고리(이론·운동처방·병태생리·액티브에이징·지도론) 중 하나에 자동으로 배치합니다.</p>
+      <div class="quote">예: 키워드에 "고혈압"이 있으면 → <b>병태생리_및_질환관리</b>로 분류</div>
+    </div>
+
+    <div class="step" style="--step-color:#ffd27c">
+      <div class="step-head">
+        <div class="step-num">5</div>
+        <h3>보고서 작성 <span class="fn">write_output / write_user_guides</span></h3>
+      </div>
+      <p>분류된 자료로 <code>output.md</code>(데이터 표)와 <code>output_user_guide.md</code>(상황별 학습 가이드 + 오늘의 핵심 TOP 3)를 만듭니다.</p>
+    </div>
+
+    <div class="step" style="--step-color:#ff7ca0">
+      <div class="step-head">
+        <div class="step-num">6</div>
+        <h3>스스로 검토 <span class="fn">review_guides</span></h3>
+      </div>
+      <p>완성된 가이드를 다시 점검합니다 — 자료가 부족한 섹션은 없는지, "무조건"·"100%" 같은 위험한 단정 표현이 있는지, 안내 대상이 명확한지.</p>
+      <p class="tag-line">LLM 검토가 가능하면 Gemini가, 실패하면 규칙 기반 체크리스트가 대신합니다.</p>
+    </div>
+
+    <div class="step" style="--step-color:#7cd9ff">
+      <div class="step-head">
+        <div class="step-num">7</div>
+        <h3>부족하면 재수집 <span class="fn">needs_refetch 피드백 루프</span></h3>
+      </div>
+      <p>검토 결과 자료가 부족하다고 판단되면, <b>다른 검색어로 한 번 더</b> 외부 자료를 가져와서 보고서를 다시 작성합니다.</p>
+      <div class="quote">📍 이 부분이 "결과를 보고 스스로 보완하는" 적응형 동작입니다</div>
+    </div>
+
+    <div class="step" style="--step-color:#9affc2">
+      <div class="step-head">
+        <div class="step-num">8</div>
+        <h3>텔레그램 전송 <span class="fn">send_to_telegram</span></h3>
+      </div>
+      <p>완성된 가이드를 <b>"브리핑 도착 📬"</b> 머리말과 함께 전송합니다. 4096자가 넘으면 자동으로 여러 메시지로 쪼개서 순서대로 보냅니다.</p>
+    </div>
+
+  </div>
+</section>
+
+<section class="summary">
+  <h2>핵심 요약</h2>
+  <p>
+    "점수를 매겨 줄 세우고 → 분류하고 → AI로 보강하고 → 검토하고 → 부족하면 다시 찾아오는"<br>
+    모든 <span class="highlight">판단을 코드가 직접</span> 합니다. AI는 보조 역할일 뿐입니다.<br>
+    그래서 단순 챗봇이 아니라 <span class="highlight">"에이전트"</span>로 분류됩니다.
+  </p>
+</section>
+
+</body>
+</html>

@@ -5,20 +5,22 @@ import xml.etree.ElementTree as ET
 import json
 import ssl
 import os
+import re
 import time
-import random
 
-# Week-12 선택 확장 토글 (필요 시 False로 끄면 기본 실행만 동작)
-USE_LLM = True       # Gemini로 요약/팁 보조
-USE_EXTERNAL = True  # PubMed, Google News 등 외부 도구 사용
-USE_LLM_REVIEW = True   # True로 바꾸면 Gemini API로 검토 보조
-THEORY_SAMPLE_SIZE = 3    # 이론/용어: 항상 포함할 항목 수 (큐레이션된 학습 자료)
-INTERNAL_SAMPLE_SIZE = 5  # 외부 데이터 없을 때 내부 샘플로 보충할 총 항목 수
-RANDOM_SEED = None        # None으로 바꾸면 실행마다 다른 결과 (데모용)
-LLM_CALL_LIMIT = 6        # Gemini API 비용 통제: 수집 후 보강 최대 호출 횟수
-TOP_N = 3                 # 오늘의 핵심 상단 요약에 표시할 항목 수
+from knowledge_base import (
+    CONDITION_QUERY_MAP, CONTRAINDICATIONS, PRESCRIPTION_GUIDELINES,
+    GENDER_ADJUSTMENTS, KNOWLEDGE_ITEMS, CONDITION_ALIASES,
+)
 
-# 규칙 기반 보강용 판단 기준 (LLM 없을 때도 동작)
+# ── 설정 토글 ──
+USE_LLM = True       # OpenAI로 요약/팁 보조
+USE_EXTERNAL = True  # PubMed 외부 논문 검색
+USE_LLM_REVIEW = True
+LLM_CALL_LIMIT = 4
+TOP_N = 3
+
+# 규칙 기반 보강용 용어 사전
 TERM_GLOSSARY = {
     "sarcopenia": "근감소증", "resistance training": "저항운동",
     "eccentric exercise": "편심성 운동", "flexibility": "유연성",
@@ -27,6 +29,7 @@ TERM_GLOSSARY = {
     "balance": "균형", "gait": "보행", "frailty": "노쇠",
     "muscle": "근육", "strength": "근력", "aerobic": "유산소",
     "fall prevention": "낙상 예방", "physical activity": "신체활동",
+    "hypertension": "고혈압", "obesity": "비만", "diabetes": "당뇨",
 }
 STUDY_TYPE_RULES = {
     "randomized controlled trial": "무작위 대조 시험(RCT)",
@@ -36,23 +39,17 @@ STUDY_TYPE_RULES = {
     "cohort": "코호트 연구",
     "cross-sectional": "횡단 연구",
 }
-DOMAIN_KEYWORDS = [
-    "sarcopenia", "elderly", "older adults", "resistance training",
-    "exercise intervention", "근감소증", "노인", "시니어", "운동처방",
-    "저항운동", "유산소", "낙상", "근력", "보행속도", "체력",
-    "ACSM", "노화", "만성질환", "frailty", "노쇠",
-]
+
 
 def _make_ssl_context():
-    """macOS 시스템 인증서 부재 환경에서도 SSL 검증을 정상 수행하도록 certifi를 우선 사용한다."""
     try:
         import certifi
         return ssl.create_default_context(cafile=certifi.where())
     except ImportError:
         return ssl.create_default_context()
 
+
 def load_env():
-    """외부 패키지 없이 .env 파일을 읽어 환경 변수로 설정합니다."""
     try:
         with open('.env', 'r', encoding='utf-8') as f:
             for line in f:
@@ -63,872 +60,567 @@ def load_env():
     except FileNotFoundError:
         pass
 
-def summarize_with_gemini(type_, title, content):
-    """Gemini API를 호출하여 전문가 수준의 요약과 실전 팁을 생성합니다."""
-    if not USE_LLM:
-        return "LLM 비활성화 (규칙 기반 결과)", "LLM 비활성화"
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return "뉴스/논문 원문을 확인해주세요.", "추후 분석 (API 키 필요)"
-        
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    
-    prompt = f"""
-당신은 노인체육 지도자이자 운동처방사입니다.
-아래 자료를 분석하여 특수체육 전공생이 아침 공부에 바로 활용할 수 있는 정보를 JSON으로 출력하세요.
-제목이 영어라면 반드시 한국어로 설명하세요.
 
-자료 유형: {type_}
-제목: {title}
-내용: {content if content else "(내용 없음 - 제목만으로 분석)"}
+# ═══════════════════════════════════════════
+# [에이전트 1] 입력 분석: 사용자 케이스 → 프로필 dict
+# ═══════════════════════════════════════════
 
-출력 규칙 (백틱 없이 순수 JSON만):
-{{
-  "korean_summary": "한국어 2~3문장. 영어 제목이면 번역 포함. 핵심 연구결과나 뉴스 내용.",
-  "why_important": "노인체육/운동처방 분야에서 이 자료가 왜 중요한지 1문장.",
-  "study_point": "오늘 이것만 기억하세요 — 핵심 1가지 (수치나 원칙 포함).",
-  "field_tip": "복지관·보건소 현장에서 바로 쓸 수 있는 적용법 1문장 (강도·빈도·주의사항 포함)."
-}}
-"""
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
-    }
-    
+def extract_user_profile(query):
+    """사용자 자연어 입력에서 대상자 프로필(나이, 성별, 질환)을 추출한다.
+    규칙 기반이므로 LLM 없이도 동작한다."""
+    profile = {"age": None, "gender": None, "conditions": [], "raw_query": query}
+
+    # 나이 추출: "57세", "57살", "57 여성", "57세 남성" 등 다양한 패턴 지원
+    age_match = re.search(r'(\d{2,3})\s*(?:세|살|여성|남성|여자|남자)', query)
+    if age_match:
+        profile["age"] = int(age_match.group(1))
+
+    # 성별 추출
+    if "여성" in query or "여자" in query:
+        profile["gender"] = "여성"
+    elif "남성" in query or "남자" in query:
+        profile["gender"] = "남성"
+
+    # 질환 추출 (CONDITION_ALIASES 기반 매칭)
+    query_lower = query.lower()
+    found = set()
+    for alias, condition in CONDITION_ALIASES.items():
+        if alias.lower() in query_lower:
+            found.add(condition)
+    profile["conditions"] = sorted(found)
+
+    # 연령대 카테고리 결정
+    age = profile["age"]
+    if age and age >= 65:
+        profile["age_group"] = "65세_이상_기본"
+    elif age and age >= 50:
+        profile["age_group"] = "50~64세_기본"
+    elif age and age < 50:
+        profile["age_group"] = "19~49세_기본"
+    else:
+        profile["age_group"] = "65세_이상_기본"  # 나이 정보가 아예 없을 때의 기본값
+
+    return profile
+
+
+# ═══════════════════════════════════════════
+# [에이전트 2] 지식 검색: 로컬 RAG + 외부 PubMed
+# ═══════════════════════════════════════════
+
+def search_knowledge_base(profile):
+    """내부 지식 베이스에서 프로필과 관련된 항목을 키워드 매칭으로 검색한다."""
+    conditions = profile.get("conditions", [])
+    if not conditions:
+        return KNOWLEDGE_ITEMS[:]  # 질환 미지정 시 전체 반환
+
+    results = []
+    for item in KNOWLEDGE_ITEMS:
+        text = (item["title"] + " " + item["content"] + " " + item["keywords"]).lower()
+        # 질환 키워드와 매칭되면 포함
+        if any(c in text for c in [c.lower() for c in conditions]):
+            results.append(dict(item, source="내부(지식베이스)", link="링크 없음"))
+        # 이론/용어는 항상 포함 (기본 학습 자료)
+        elif item["type"] in ("이론", "용어"):
+            results.append(dict(item, source="내부(지식베이스)", link="링크 없음"))
+
+    return results
+
+
+def build_pubmed_query(profile):
+    """프로필 기반으로 PubMed 검색 쿼리를 동적 생성한다."""
+    parts = []
+    for cond in profile.get("conditions", []):
+        q = CONDITION_QUERY_MAP.get(cond)
+        if q:
+            parts.append(f"({q})")
+    if not parts:
+        return "exercise prescription older adults"
+    return " OR ".join(parts)
+
+
+def fetch_external_context(profile):
+    """PubMed에서 프로필 기반 동적 쿼리로 논문을 검색한다.
+    Returns: (facts_list, status_dict)"""
+    facts, status = [], {"pubmed": "skipped"}
+    if not USE_EXTERNAL:
+        return facts, status
+
     ctx = _make_ssl_context()
+    query = build_pubmed_query(profile)
+    print(f"  - PubMed 검색 쿼리: {query}")
 
-    req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
-    
     try:
-        response = urllib.request.urlopen(req, context=ctx, timeout=15)
-        res_data = json.loads(response.read())
-        text_res = res_data['candidates'][0]['content']['parts'][0]['text']
-        # 백틱 등 마크다운 잔재 제거
-        text_res = text_res.replace('```json', '').replace('```', '').strip()
-        result = json.loads(text_res)
-        # 필수 필드 검증
-        required = ("korean_summary", "why_important", "study_point", "field_tip")
-        if not all(result.get(k) for k in required):
-            raise ValueError(f"필수 필드 누락: {[k for k in required if not result.get(k)]}")
-        return result
-    except Exception as e:
-        print(f"    - Gemini API 오류: {e}")
-        return None
+        encoded = urllib.parse.quote(query)
+        search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={encoded}&retmax=3&retmode=json"
+        res = urllib.request.urlopen(search_url, context=ctx, timeout=8)
+        ids = json.loads(res.read())["esearchresult"]["idlist"]
 
-def fetch_external_context(query="시니어 스포츠 OR 보건소 운동 프로그램", pubmed_query="sarcopenia exercise intervention OR older adults resistance training"):
-    """구글 뉴스 및 PubMed에서 보조 데이터를 가져옵니다. (외부 도구 - 보강 정보)
-
-    Returns:
-        facts: 수집된 항목 리스트
-        status: 소스별 성공/실패 상태 딕셔너리
-    """
-    facts = []
-    status = {"google_news": "skipped", "pubmed": "skipped"}
-
-    ctx = _make_ssl_context()
-
-    # 1. 구글 뉴스 (한국어 시니어 스포츠 뉴스)
-    try:
-        q = urllib.parse.quote(query)
-        url = f"https://news.google.com/rss/search?q={q}&hl=ko&gl=KR&ceid=KR:ko"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        response = urllib.request.urlopen(req, context=ctx, timeout=5)
-        xml_data = response.read()
-        root = ET.fromstring(xml_data)
-
-        count = 0
-        for item in root.findall('.//item'):
-            if count >= 2: break
-            title = item.find('title').text
-            link = item.find('link').text
-            facts.append({
-                "type": "뉴스",
-                "title": title,
-                "content": "",
-                "keywords": "시니어, 스포츠, 보건소, 커뮤니티",
-                "practical_tip": "추후 분석",
-                "link": link,
-                "source": "외부(Google News)"
-            })
-            count += 1
-        status["google_news"] = f"success ({count}건)"
-        print(f"  - 구글 뉴스 RSS 연동 성공 ✅ ({count}건)")
-    except Exception as e:
-        err_str = str(e).lower()
-        if "429" in err_str or "rate" in err_str or "quota" in err_str:
-            status["google_news"] = "rate_limit"
-        elif isinstance(e, TimeoutError) or "timed out" in err_str or "timeout" in err_str:
-            status["google_news"] = "timeout"
-        elif isinstance(e, (ConnectionError, OSError)):
-            status["google_news"] = "connection_error"
-        else:
-            status["google_news"] = f"error: {type(e).__name__}"
-        print(f"  - 구글 뉴스 연동 실패 ⚠️ [{status['google_news']}]: {e}")
-
-    # 2. PubMed (영어 논문)
-    try:
-        search_query = urllib.parse.quote(pubmed_query)
-        search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={search_query}&retmax=2&retmode=json"
-        search_res = urllib.request.urlopen(search_url, context=ctx, timeout=5)
-        search_data = json.loads(search_res.read())
-        id_list = search_data['esearchresult']['idlist']
-
-        count = 0
-        if id_list:
-            ids = ",".join(id_list)
-            summary_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={ids}&retmode=json"
-            summary_res = urllib.request.urlopen(summary_url, context=ctx, timeout=5)
-            summary_data = json.loads(summary_res.read())
-
-            for pid in id_list:
-                article = summary_data['result'][pid]
-                title = article.get('title', '')
-                link = f"https://pubmed.ncbi.nlm.nih.gov/{pid}/"
-                # 논문 제목에서 TERM_GLOSSARY로 실제 키워드 추출
+        if ids:
+            summary_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={','.join(ids)}&retmode=json"
+            sdata = json.loads(urllib.request.urlopen(summary_url, context=ctx, timeout=8).read())
+            for pid in ids:
+                art = sdata["result"][pid]
+                title = art.get("title", "")
                 title_lower = title.lower()
-                extracted_kw = [v for k, v in TERM_GLOSSARY.items() if k in title_lower]
-                keywords = ", ".join(dict.fromkeys(extracted_kw)) if extracted_kw else "노인, 운동처방"
+                kw = [v for k, v in TERM_GLOSSARY.items() if k in title_lower]
                 facts.append({
-                    "type": "논문",
-                    "title": title,
-                    "content": "",
-                    "keywords": keywords,
+                    "type": "논문", "title": title, "content": "",
+                    "keywords": ", ".join(dict.fromkeys(kw)) or "노인, 운동처방",
                     "practical_tip": "추후 분석",
-                    "link": link,
-                    "source": "외부(PubMed)"
+                    "link": f"https://pubmed.ncbi.nlm.nih.gov/{pid}/",
+                    "source": "외부(PubMed)",
                 })
-                count += 1
-        status["pubmed"] = f"success ({count}건)"
-        print(f"  - PubMed API 연동 성공 ✅ ({count}건)")
+        status["pubmed"] = f"success ({len(ids)}건)"
+        print(f"  - PubMed 연동 성공 ✅ ({len(ids)}건)")
     except Exception as e:
-        err_str = str(e).lower()
-        if "429" in err_str or "rate" in err_str or "quota" in err_str:
-            status["pubmed"] = "rate_limit"
-        elif isinstance(e, TimeoutError) or "timed out" in err_str or "timeout" in err_str:
-            status["pubmed"] = "timeout"
-        elif isinstance(e, (ConnectionError, OSError)):
-            status["pubmed"] = "connection_error"
-        else:
-            status["pubmed"] = f"error: {type(e).__name__}"
-        print(f"  - PubMed 연동 실패 ⚠️ [{status['pubmed']}]: {e}")
+        status["pubmed"] = f"error: {e}"
+        print(f"  - PubMed 연동 실패 ⚠️: {e}")
 
     return facts, status
 
-def extract_facts(raw_text):
-    """입력된 텍스트에서 논문/뉴스를 분리하고 제목, 내용, 키워드를 추출합니다."""
-    items = []
-    skipped = 0
-    blocks = raw_text.strip().split("\n\n")
 
-    # 지원하는 자료 유형: 논문, 뉴스, 이론, 케이스, 용어
-    type_tag_map = {
-        "[논문]": "논문",
-        "[뉴스]": "뉴스",
-        "[이론]": "이론",
-        "[케이스]": "케이스",
-        "[용어]": "용어",
-    }
+# ═══════════════════════════════════════════
+# [에이전트 3] 관련성 점수 + 보강
+# ═══════════════════════════════════════════
 
-    for block in blocks:
-        lines = block.strip().split("\n")
-        if not lines or not lines[0].strip():
-            continue
-
-        title_line = lines[0]
-        type_ = None
-        title = None
-        for tag, label in type_tag_map.items():
-            if title_line.startswith(tag):
-                type_ = label
-                title = title_line.replace(tag, "").strip()
-                break
-
-        if type_ is None:
-            skipped += 1
-            print(f"  [파싱 건너뜀] 인식 불가 형식: {title_line[:40]!r}")
-            continue
-
-        content = ""
-        keywords = ""
-        link = "링크 없음"
-        practical_tip = "추후 분석"
-
-        for line in lines[1:]:
-            if line.startswith("- 초록:") or line.startswith("- 내용:"):
-                content = line.split(":", 1)[1].strip()
-            elif line.startswith("- 키워드:"):
-                keywords = line.split(":", 1)[1].strip()
-            elif line.startswith("- 링크:"):
-                link = line.split(":", 1)[1].strip()
-
-        if not content:
-            print(f"  [경고] '{title}' — 내용/초록 없음, 분류 정확도 낮아질 수 있음")
-
-        items.append({
-            "type": type_,
-            "title": title,
-            "content": content,
-            "keywords": keywords,
-            "practical_tip": practical_tip,
-            "link": link,
-            "source": "내부"
-        })
-
-    if skipped:
-        print(f"  - 파싱 실패 블록 {skipped}개 건너뜀 (형식 확인 필요) ⚠️")
-
-    return items
-
-
-def save_markdown_table(facts):
-    """추출된 항목들을 output.md 파일에 표 형태로 저장합니다."""
-    output_path = Path("output.md")
-    
-    lines = []
-    lines.append("# 시니어 스포츠 학습 도우미: 데이터 추출 표\n")
-    lines.append("| 자료 유형 | 제목 | 관심 키워드 | 핵심 요약 | 실전 적용 팁 | 원문 링크 |")
-    lines.append("|---|---|---|---|---|---|")
-    
-    for f in facts:
-        content = f.get('content', '').replace('\n', ' ')
-        practical_tip = f.get('practical_tip', '').replace('\n', ' ')
-        title = f.get('title', '').replace('\n', ' ')
-        link = f.get('link', '')
-        
-        # 링크 형식을 마크다운으로 변환
-        if link != "링크 없음":
-            link_md = f"[이동하기]({link})"
-        else:
-            link_md = link
-            
-        lines.append(f"| {f.get('type', '')} | {title} | {f.get('keywords', '')} | {content} | {practical_tip} | {link_md} |")
-        
-    output_path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def score_relevance(item):
-    """항목의 도메인 관련성과 보강 필요도를 0~10점으로 평가한다.
-    점수는 relevance_score 필드로 저장되어 이후 단계에서 추적 가능하다."""
+def score_relevance(item, profile):
+    """프로필 기반 관련성 점수 (0~10)."""
     score = 0
     text = (item.get("title", "") + " " + item.get("content", "") + " " + item.get("keywords", "")).lower()
-
-    # 도메인 키워드 매칭 (최대 4점)
-    score += min(sum(1 for kw in DOMAIN_KEYWORDS if kw.lower() in text), 4)
-    # 내용 없음 → 보강 필요 (3점)
-    if not item.get("content", ""):
-        score += 3
-    # 외부 자료 → 신선도 가산 (2점)
-    if item.get("source", "내부") != "내부":
+    # 질환 매칭 (핵심 가중치)
+    for cond in profile.get("conditions", []):
+        if cond.lower() in text:
+            score += 3
+    # 내용 없음 → 보강 필요
+    if not item.get("content"):
         score += 2
-    # 내부 이론/용어이고 이미 내용 있음 → 우선순위 낮춤 (-1점)
-    if item.get("type") in ("이론", "용어") and item.get("content", ""):
-        score -= 1
-
-    return max(0, score)
-
-
-def classify_items(items):
-    """전문가 수준의 5대 카테고리로 항목을 분류합니다."""
-    grouped = {
-        "이론_및_용어학습": [],
-        "운동처방_및_평가": [],
-        "병태생리_및_질환관리": [],
-        "액티브에이징_및_인지심리": [],
-        "지도론_및_정책동향": [],
-        "기타": []
-    }
-
-    for item in items:
-        keywords = item["keywords"]
-        type_ = item.get("type", "")
-
-        # 자료 유형이 이론/용어면 우선적으로 학습 카테고리에 배치
-        if type_ in ("이론", "용어") or any(k in keywords for k in ["영어용어", "학술용어", "ACSM", "FITT", "1RM", "AWGS"]):
-            grouped["이론_및_용어학습"].append(item)
-        elif any(k in keywords for k in ["근력", "근감소증", "저항운동", "균형", "낙상예방", "유연성", "체력평가", "처방", "보행속도"]):
-            grouped["운동처방_및_평가"].append(item)
-        elif any(k in keywords for k in ["단백질", "영양", "관절염", "고혈압", "당뇨", "심혈관", "노화기전", "대사증후군", "만성질환", "노년기"]):
-            grouped["병태생리_및_질환관리"].append(item)
-        elif any(k in keywords for k in ["인지", "치매예방", "이중과제", "우울증", "동기부여", "여가", "커뮤니티", "수영", "레크리에이션", "어르신", "시니어"]):
-            grouped["액티브에이징_및_인지심리"].append(item)
-        elif any(k in keywords for k in ["보건소", "복지관", "정책", "바우처", "지도법", "안전관리", "지역상권", "이벤트", "할인"]):
-            grouped["지도론_및_정책동향"].append(item)
-        else:
-            grouped["기타"].append(item)
-
-    return grouped
+    # 외부 자료 신선도 가산
+    if item.get("source", "내부") != "내부(지식베이스)":
+        score += 1
+    # 케이스 자료는 실전 적용도 높음
+    if item.get("type") == "케이스":
+        score += 1
+    return min(score, 10)
 
 
 def enrich_rule_based(item):
-    """LLM 없이 규칙 기반으로 항목을 보강한다. TERM_GLOSSARY와 STUDY_TYPE_RULES가 판단 기준."""
+    """LLM 없이 규칙 기반으로 항목을 보강한다."""
     title_lower = item.get("title", "").lower()
-    content = item.get("content", "")
-    type_ = item.get("type", "")
-
-    if type_ == "논문" and not content:
-        # 연구 유형 감지 (STUDY_TYPE_RULES 기준)
+    if item.get("type") == "논문" and not item.get("content"):
         study_type = next((v for k, v in STUDY_TYPE_RULES.items() if k in title_lower), "연구")
-        # 도메인 키워드 번역 (TERM_GLOSSARY 기준)
-        found = [v for k, v in TERM_GLOSSARY.items() if k in title_lower]
-        topics = "·".join(found[:3]) if found else "노인 운동"
+        topics = "·".join([v for k, v in TERM_GLOSSARY.items() if k in title_lower][:3]) or "노인 운동"
         item["content"] = f"[규칙 기반] {topics} 관련 {study_type}"
         item["practical_tip"] = "원문 링크에서 구체적인 처방 수치를 확인하세요."
-
-    elif type_ == "뉴스" and not content:
-        item["practical_tip"] = "원문 링크에서 최신 시니어 스포츠 동향을 확인하세요."
-
-    elif type_ in ("이론", "용어") and content:
-        # 내용에서 처방 수치 추출 (정규식)
-        import re
-        nums = re.findall(r'주\s*\d+[~\-]?\d*회|RPE\s*[\d~\-]+|\d+분|\d+RM|\d+%', content)
-        if nums:
-            item["practical_tip"] = f"핵심 수치: {', '.join(nums[:4])}"
-
     return item
 
 
-def enrich_facts(facts):
-    """[에이전트 2] 보강 에이전트: relevance_score 순으로 정렬 후 LLM 또는 규칙 기반으로 보강."""
-    # 1. 관련성 점수 계산 및 저장 (추적 가능)
+def summarize_with_openai(type_, title, content):
+    """OpenAI API로 전문가 수준 요약을 생성한다."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    prompt = f"""당신은 노인체육 지도자이자 운동처방사입니다.
+아래 자료를 분석하여 JSON으로 출력하세요. 영어 제목은 한국어로 설명하세요.
+자료 유형: {type_} | 제목: {title} | 내용: {content or '(제목만으로 분석)'}
+
+출력 (백틱 없이 순수 JSON만):
+{{"korean_summary": "한국어 2~3문장 핵심 요약", "study_point": "핵심 1가지", "field_tip": "현장 적용법 1문장"}}"""
+
+    data = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"}}
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions",
+                                data=json.dumps(data).encode('utf-8'), headers=headers)
+    try:
+        res = urllib.request.urlopen(req, context=_make_ssl_context(), timeout=15)
+        text = json.loads(res.read())['choices'][0]['message']['content']
+        return json.loads(text.replace('```json', '').replace('```', '').strip())
+    except Exception as e:
+        print(f"    - OpenAI API 오류: {e}")
+        return None
+
+
+def enrich_facts(facts, profile):
+    """관련성 점수 순 정렬 후 LLM 또는 규칙 기반 보강."""
     for f in facts:
-        f["relevance_score"] = score_relevance(f)
+        f["relevance_score"] = score_relevance(f, profile)
     facts.sort(key=lambda f: f["relevance_score"], reverse=True)
 
-    # 2. LLM 또는 규칙 기반 분기
-    if USE_LLM and os.environ.get("GEMINI_API_KEY"):
-        print(f"-> [에이전트 2] LLM 보강 중... (최대 {LLM_CALL_LIMIT}건, relevance_score 순)")
+    if USE_LLM and os.environ.get("OPENAI_API_KEY"):
+        print(f"-> [에이전트 3] LLM 보강 중... (최대 {LLM_CALL_LIMIT}건)")
         boosted = 0
         for f in facts:
             if boosted >= LLM_CALL_LIMIT:
                 break
-            if f.get("practical_tip", "") in ("추후 분석", "", None):
-                if boosted > 0:  # 첫 호출 전엔 sleep 불필요, 이후 호출 간격 확보
+            if f.get("practical_tip") in ("추후 분석", "", None):
+                if boosted > 0:
                     time.sleep(2)
-                result = summarize_with_gemini(f.get("type", ""), f.get("title", ""), f.get("content", ""))
+                result = summarize_with_openai(f.get("type", ""), f.get("title", ""), f.get("content", ""))
                 if result:
-                    f["content"] = result["korean_summary"]
-                    f["why_important"] = result["why_important"]
-                    f["study_point"] = result["study_point"]
-                    f["practical_tip"] = result["field_tip"]
+                    f["content"] = result.get("korean_summary", f["content"])
+                    f["study_point"] = result.get("study_point", "")
+                    f["practical_tip"] = result.get("field_tip", "")
                     boosted += 1
         print(f"  - {boosted}개 항목 LLM 보강 완료 ✅")
     else:
-        print("-> [에이전트 2] 규칙 기반 보강 (LLM 없음)")
+        print("-> [에이전트 3] 규칙 기반 보강")
         for f in facts:
             enrich_rule_based(f)
-        print(f"  - {len(facts)}개 항목 규칙 기반 보강 완료 ✅")
 
-    # 3. LLM 후 미보강 항목은 규칙으로 fallback
+    # LLM 후 미보강 항목 fallback
     for f in facts:
-        if f.get("practical_tip", "") in ("추후 분석", "", None):
+        if f.get("practical_tip") in ("추후 분석", "", None):
             enrich_rule_based(f)
-
     return facts
 
 
-def write_output(grouped):
-    """선정된 항목을 바탕으로 전문가 수준의 카테고리별 브리핑 텍스트를 작성합니다."""
+# ═══════════════════════════════════════════
+# [에이전트 4] 맞춤형 처방 생성
+# ═══════════════════════════════════════════
+
+def synthesize_expert_advice(profile, guide_text):
+    """OpenAI API를 사용하여 대상자의 프로필과 1차 생성된 처방을 바탕으로 상세한 종합 처방 및 영양/라이프스타일 조언을 생성한다."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not USE_LLM or not api_key:
+        return "> 💡 전문가 코멘트: 각 질환별 개별 가이드라인을 준수하되, 중복되는 금기사항을 최우선으로 지켜주세요. 점진적인 강도 증가가 핵심입니다."
+
+    age = profile.get("age", "미상")
+    gender = profile.get("gender", "미상")
+    conditions = ", ".join(profile.get("conditions", [])) or "특이사항 없음"
+
+    prompt = f"""당신은 ACSM 인증 수석 임상운동생리학자입니다.
+다음 대상자 프로필과 기본 처방안을 바탕으로, 대상자가 여러 질환을 복합적으로 가지고 있을 경우의 우선순위, 상호작용, 그리고 영양 및 라이프스타일에 대한 "통합 전문가 조언"을 작성해주세요.
+
+[대상자 프로필]
+나이: {age}세 | 성별: {gender} | 감지된 질환: {conditions}
+
+[기본 처방안]
+{guide_text}
+
+[요청 사항]
+1. 친절하고 전문적인 톤으로 작성하세요 (존댓말 사용).
+2. 여러 질환이 겹칠 경우 운동 시 주의해야 할 시너지나 상충되는 부분(예: 고혈압과 당뇨가 같이 있을 때의 운동 타이밍 등)을 구체적으로 짚어주세요.
+3. 운동뿐만 아니라 식단/영양, 수분 섭취, 수면 등 라이프스타일 팁을 1문단 추가해주세요.
+4. 전체 분량은 2~3문단으로 구성하며, 마크다운(bold 등)을 활용해 가독성 있게 작성하세요.
+5. "전문가 종합 처방 조언"이라는 제목은 제외하고 내용만 작성하세요."""
+
+    data = {"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}], "temperature": 0.5, "max_tokens": 800}
+    try:
+        req = urllib.request.Request("https://api.openai.com/v1/chat/completions",
+                                     data=json.dumps(data).encode("utf-8"),
+                                     headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'})
+        with urllib.request.urlopen(req, context=_make_ssl_context(), timeout=15) as res:
+            return json.loads(res.read().decode('utf-8'))['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"    - 종합 조언 생성 실패: {e}")
+        return "> 💡 전문가 코멘트: 각 질환별 가이드라인을 꼼꼼히 확인하고, 안전을 최우선으로 점진적으로 운동량을 늘려주세요."
+
+def write_prescription_guide(facts, profile):
+    """프로필 기반 맞춤형 운동처방 가이드를 Markdown으로 생성한다."""
     lines = []
-    lines.append("===================================")
-    lines.append("  [오늘의 시니어 스포츠 전문 브리핑]  ")
-    lines.append("===================================")
+    age = profile.get("age", "미상")
+    gender = profile.get("gender", "미상")
+    conditions = profile.get("conditions", [])
+    age_group = profile.get("age_group", "65세_이상_기본")
+
+    lines.append(f"# 🏋️ 맞춤형 운동처방 가이드\n")
+    lines.append(f"**대상자**: {age}세 {gender}, 질환: {', '.join(conditions) or '없음'}\n")
+    lines.append("---\n")
+
+    # 1. 기본 가이드라인 (연령대별)
+    base = PRESCRIPTION_GUIDELINES.get(age_group, {})
+    if base:
+        lines.append(f"## 📋 기본 가이드라인 ({age_group.replace('_', ' ')})\n")
+        for k, v in base.items():
+            lines.append(f"- **{k}**: {v}")
+        lines.append("")
+
+    # 2. 질환별 처방
+    for cond in conditions:
+        guide = PRESCRIPTION_GUIDELINES.get(cond, {})
+        contra = CONTRAINDICATIONS.get(cond, {})
+        if guide or contra:
+            lines.append(f"## 🩺 {cond} 운동처방\n")
+            if guide:
+                lines.append("### FITT 처방")
+                for k, v in guide.items():
+                    lines.append(f"- **{k}**: {v}")
+            if contra:
+                lines.append("\n### ⚠️ 안전 관리")
+                for level, items in contra.items():
+                    if items:
+                        lines.append(f"- **{level}**: {' / '.join(items)}")
+            lines.append("")
+
+    # 3. 성별 보정
+    gender_adj = GENDER_ADJUSTMENTS.get(gender, [])
+    if gender_adj:
+        lines.append(f"## 👤 {gender} 특이사항\n")
+        for adj in gender_adj:
+            lines.append(f"- {adj}")
+        lines.append("")
+        
+    # [에이전트 4.5] 전문가 종합 조언 (LLM)
+    raw_guide_so_far = "\n".join(lines)
+    expert_advice = synthesize_expert_advice(profile, raw_guide_so_far)
     
-    category_names = {
-        "이론_및_용어학습": "📚 이론 및 용어 학습",
-        "운동처방_및_평가": "🏋️‍♂️ 운동처방 및 평가",
-        "병태생리_및_질환관리": "🩺 병태생리 및 질환관리",
-        "액티브에이징_및_인지심리": "🧠 액티브 에이징 및 인지심리",
-        "지도론_및_정책동향": "📋 지도론 및 정책동향",
-        "기타": "📌 기타 소식"
-    }
+    # 조언을 "기본 가이드라인" 직후, 질환별 처방 앞에 삽입하기 위해 리스트 재배치
+    final_lines = []
+    final_lines.extend(lines[:4]) # 제목과 대상자 정보까지
     
-    for key, items in grouped.items():
-        if not items:
-            continue
-            
-        lines.append(f"\n▶ {category_names.get(key, key)}")
-        for item in items:
-            lines.append(f"  [{item['type']}] {item['title']}")
-            short_content = item['content'][:40] + "..." if len(item['content']) > 40 else item['content']
-            lines.append(f"  - 요약: {short_content}")
-            if item.get('link') and item.get('link') != '링크 없음':
-                lines.append(f"  - 링크: {item['link']}")
-                
-    lines.append("\n===================================")
+    final_lines.append(f"## 🩺 전문가 종합 처방 조언\n\n{expert_advice}\n\n---\n")
     
-    return "\n".join(lines)
+    final_lines.extend(lines[4:]) # 나머지 섹션들
+    lines = final_lines
 
-def _render_section_items(lines, internal_items, external_items, empty_msg):
-    """섹션 내 내부/외부 자료를 구분하여 마크다운에 렌더링하는 헬퍼입니다."""
-    if internal_items:
-        for item in internal_items:
-            study_point = item.get('study_point', '')
-            tip = item.get('practical_tip', '')
-            content = item.get('content', '')
-            display = study_point or tip or content[:60]
-            link = item.get('link', '')
-            link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
-            lines.append(f"- [{item['type']}] **{item['title']}**{link_md}")
-            if display and display not in ("추후 분석", "팁 생성 실패"):
-                lines.append(f"  - {display}")
-    elif not external_items:
-        lines.append(f"- {empty_msg}")
-
-    if external_items:
-        lines.append("\n### 📡 외부 참고 자료")
-        for item in external_items:
-            source_tag = item.get('source', '외부')
-            # 새 필드 우선, 없으면 기존 필드 fallback
-            summary = item.get('content', '') or item.get('practical_tip', '')
-            study_point = item.get('study_point', '')
-            link = item.get('link', '')
-            link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
-            lines.append(f"- [{item['type']}] **{item['title']}** (출처: {source_tag}){link_md}")
-            if summary:
-                lines.append(f"  - {summary[:120]}")
-            if study_point:
-                lines.append(f"  - 📌 {study_point}")
-
-
-def write_user_guides(grouped, facts=None):
-    """정무현 예비 특수체육 지도자를 위한 상황/목적별 실전 가이드를 작성합니다."""
-    lines = []
-    lines.append("# 🎓 정무현 전공생을 위한 오늘의 특수체육 학습 가이드\n")
-
-    # TOP N 요약 — relevance_score 상위 항목 중 논문/뉴스 우선
-    if facts:
-        top_candidates = sorted(
-            [f for f in facts if f.get("type") in ("논문", "뉴스")],
-            key=lambda f: f.get("relevance_score", 0), reverse=True
-        )[:TOP_N]
-        if not top_candidates:
-            top_candidates = sorted(facts, key=lambda f: f.get("relevance_score", 0), reverse=True)[:TOP_N]
-
-        lines.append("## 📌 오늘의 핵심\n")
-        for i, item in enumerate(top_candidates, 1):
-            sp = item.get("study_point") or item.get("content", "")[:60]
+    # 4. 근거 자료 (관련성 상위)
+    top = [f for f in facts if f.get("relevance_score", 0) >= 2][:TOP_N]
+    if top:
+        lines.append("## 📚 근거 자료 (관련성 상위)\n")
+        for i, item in enumerate(top, 1):
             link = item.get("link", "")
             link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
-            lines.append(f"{i}. [{item['type']}] **{item['title'][:60]}**{link_md}")
-            if sp:
-                lines.append(f"   {sp}")
+            lines.append(f"{i}. [{item['type']}] **{item['title'][:80]}**{link_md}")
+            sp = item.get("study_point") or item.get("content", "")[:100]
+            if sp and sp not in ("추후 분석",):
+                lines.append(f"   - {sp}")
         lines.append("")
-    
-    # 섹션별 카테고리 매핑
-    section_map = [
-        {
-            "title": "## 📖 1. 전공 심화 학습 (이론 및 병태생리)",
-            "keys": ["이론_및_용어학습", "병태생리_및_질환관리"],
-            "empty_msg": "오늘 수집된 심화 학습 자료가 없습니다.",
-            "warnings": [
-                "- 논문의 연구 결과는 특정 통제된 환경에서의 결과이므로 무조건적인 일반화는 피해야 합니다.",
-                "- 교재에 나오지 않는 최신 이론은 반드시 원문을 통해 타당성을 교차 검증하세요."
-            ]
-        },
-        {
-            "title": "## 🏃\u200d♂️ 2. 실전 처방 케이스 스터디 (현장 실습 대비)",
-            "keys": ["운동처방_및_평가", "액티브에이징_및_인지심리"],
-            "empty_msg": "오늘 수집된 실전 처방 자료가 없습니다.",
-            "warnings": [
-                "- 이론적 처방을 실제 시니어 회원에게 적용할 때는 개인별 체력 수준과 금기 사항(안전) 파악이 최우선되어야 합니다.",
-                "- 입력 자료에 부작용이나 주의사항이 빠져 있다면, 임의로 확정하지 말고 실습 전에 질문하여 보완하세요."
-            ]
-        },
-        {
-            "title": "## 📰 3. 특수체육 업계 동향 (정책 및 커뮤니티)",
-            "keys": ["지도론_및_정책동향", "기타"],
-            "empty_msg": "오늘 수집된 업계 동향 자료가 없습니다.",
-            "warnings": [
-                "- 기사에 언급된 정책이나 예산 지원 등은 지역과 시기에 따라 다르므로 섣불리 단정짓지 마세요."
-            ]
-        }
-    ]
-    
-    for section in section_map:
-        lines.append(section["title"])
 
-        # 해당 섹션의 모든 항목을 모아서 내부/외부 분리
-        all_items = []
-        for key in section["keys"]:
-            all_items.extend(grouped.get(key, []))
-        
-        internal = [i for i in all_items if i.get("source", "내부") == "내부"]
-        external = [i for i in all_items if i.get("source", "내부") != "내부"]
-
-        if internal or not external:
-            lines.append("### 추천 학습 가이드")
-
-        _render_section_items(lines, internal, external, section["empty_msg"])
-        
-        lines.append("\n### 주의할 점")
-        for w in section["warnings"]:
-            lines.append(w)
+    # 5. 기타 참고 자료
+    others = [f for f in facts if f not in top]
+    if others:
+        lines.append("## 📎 추가 참고 자료\n")
+        for item in others:
+            link = item.get("link", "")
+            link_md = f" → [원문]({link})" if link and link != "링크 없음" else ""
+            lines.append(f"- [{item['type']}] {item['title'][:60]}{link_md}")
         lines.append("")
 
     lines.append("---")
-    lines.append("> 본 가이드는 학습 보조 자료입니다. 실제 운동 지도 전 개인별 체력 평가와 건강 상태 확인이 필요합니다. (ACSM 가이드라인 참고)")
-
+    lines.append("> ⚠️ 본 가이드는 학습 보조 자료입니다. 실제 운동 지도 전 개인별 체력 평가와 건강 상태 확인이 필요합니다. (ACSM 가이드라인 참고)")
     return "\n".join(lines)
 
 
-def save_user_guides(guides, path="output_user_guide.md"):
-    """작성된 실전 가이드를 마크다운 파일로 저장합니다."""
-    output_path = Path(path)
-    output_path.write_text(guides, encoding="utf-8")
+# ═══════════════════════════════════════════
+# [에이전트 5] 안전 검토
+# ═══════════════════════════════════════════
 
+def review_prescription_with_rules(guide_text, profile):
+    """규칙 기반 처방 안전 검토. 금기사항 위반 여부를 점검한다."""
+    report = ["# 🔍 처방 안전 검토 리포트\n", f"> 대상자: {profile.get('age')}세 {profile.get('gender')}, "
+              f"질환: {', '.join(profile.get('conditions', []))}\n"]
+    issues = []
 
-def review_guides_with_rules(guides):
-    """규칙 기반으로 실전 가이드에 누락된 정보나 위험한 단정 표현이 없는지 점검합니다."""
-    report = []
-    report.append("# 🔍 검토자 에이전트 리포트\n")
-    report.append("> 검토 방식: **규칙 기반 체크리스트**\n")
-    report.append("## 📋 체크리스트 점검 결과")
-    
-    # 1. 핵심 정보 및 행동 점검
-    if "오늘 수집된" in guides and "자료가 없습니다" in guides:
-        report.append("- [⚠️ 주의] 일부 섹션에 수집된 자료가 없습니다. (핵심 정보 부족 가능성)")
-    else:
-        report.append("- [✅ 통과] 모든 섹션에 추천/해야 할 일(행동)이 포함되어 있습니다.")
-        
-    # 2. 대상 불분명 확인
-    if "정무현 전공생" in guides or "특수체육 학습 가이드" in guides:
-        report.append("- [✅ 통과] 안내 대상(특수체육 전공생/예비 지도자)이 명확합니다.")
-    else:
-        report.append("- [⚠️ 주의] 안내 대상이 누구인지 불분명합니다.")
-        
-    # 3. 위험한 단정 표현 점검
-    # '주의할 점' 섹션(경고 문구)과 '📌'로 시작하는 study_point 줄은 검사 제외
+    # 질환별 금기사항 검사 — "금지"/"금기" 문맥이 아닌 곳에서 사용된 경우만 위험 판정
+    for cond in profile.get("conditions", []):
+        contra = CONTRAINDICATIONS.get(cond, {})
+        for forbidden in contra.get("금지", []):
+            keyword = forbidden[:4]
+            for line in guide_text.split('\n'):
+                if keyword in line and not any(w in line for w in ("금지", "금기", "⚠️", "안전")):
+                    issues.append(f"[⛔ 위험] {cond} 환자에게 금기인 '{forbidden}'이 처방 본문에서 권장됨")
+                    break
+
+    # 위험 표현 점검
     danger_words = ["무조건", "항상", "완벽한", "100%", "모든 사람에게"]
-    in_warning = False
-    check_lines = []
-    for line in guides.split('\n'):
-        if '주의할 점' in line:
-            in_warning = True
-        elif line.startswith('##'):
-            in_warning = False
-        if not in_warning and not line.strip().startswith('📌'):
-            check_lines.append(line)
-    check_text = '\n'.join(check_lines)
+    found = [w for w in danger_words if w in guide_text]
+    if found:
+        issues.append(f"[⚠️ 주의] 단정적 표현 발견: {', '.join(found)}")
 
-    found_dangers = [word for word in danger_words if word in check_text]
-
-    if found_dangers:
-        report.append(f"- [⚠️ 주의] 추천 본문에 단정적인 표현 발견: {', '.join(found_dangers)}")
+    # 결과 출력
+    report.append("## 📋 점검 결과\n")
+    if issues:
+        for issue in issues:
+            report.append(f"- {issue}")
     else:
-        report.append("- [✅ 통과] 추천 본문에 위험하거나 단정적인 표현이 발견되지 않았습니다.")
-    
-    # 4. 외부 참고 자료 구분 확인
-    if "📡 외부 참고 자료" in guides:
-        report.append("- [✅ 통과] 외부 도구 결과가 내부 자료와 구분되어 표시되었습니다.")
-    
-    report.append("\n## 📝 최종 권고사항")
-    report.append("- 제공된 가이드는 보조 수단입니다. 실제 현장 실습 및 처방 전에는 전문가와 논의하세요.")
+        report.append("- ✅ 금기사항 위반 및 위험 표현이 발견되지 않았습니다.")
 
-    report_str = "\n".join(report)
-    needs_refetch = "오늘 수집된" in report_str and "자료가 없습니다" in report_str
-    return report_str, needs_refetch
+    # 필수 체크 항목
+    report.append("\n## 📝 필수 확인 사항\n")
+    for cond in profile.get("conditions", []):
+        must = CONTRAINDICATIONS.get(cond, {}).get("필수", [])
+        for m in must:
+            icon = "✅" if m[:4] in guide_text else "⚠️"
+            report.append(f"- [{icon}] {cond}: {m}")
+
+    report.append("\n---")
+    report.append("> 본 검토는 규칙 기반 자동 점검입니다. 최종 판단은 전문가가 확인하세요.")
+    return "\n".join(report)
 
 
-def review_guides_with_llm(guides):
-    """Gemini API를 활용하여 실전 가이드를 4가지 기준으로 검토합니다."""
-    api_key = os.environ.get("GEMINI_API_KEY")
+def review_with_openai(guide_text, profile):
+    """OpenAI API로 처방 안전 검토."""
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("  - GEMINI_API_KEY 없음 → 규칙 기반 검토로 전환")
         return None
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    
-    prompt = f"""
-    당신은 시니어 스포츠·체육 학습 가이드의 전문 검토자입니다.
-    아래 가이드를 읽고, 다음 4가지 기준으로 점검하세요.
 
-    검토 기준:
-    1. 입력 자료에 없는 내용을 단정했는가
-    2. 핵심 정보가 빠졌는가
-    3. 사용자가 해야 할 일이 보이는가
-    4. 위험한 표현이 있는가
+    conditions_str = ", ".join(profile.get("conditions", []))
+    prompt = f"""당신은 운동처방 안전 검토 전문가입니다.
+대상자: {profile.get('age')}세 {profile.get('gender')}, 질환: {conditions_str}
 
-    가이드 전문:
-    {guides}
+아래 처방 가이드에서 위험한 부분을 점검하세요.
+{guide_text[:3000]}
 
-    출력 규칙 (반드시 JSON 형식, 백틱 없이 순수 JSON만 출력):
-    {{
-      "unfounded_claims": "입력 자료에 없는 내용을 단정한 부분이 있다면 구체적으로 지적. 없으면 '발견되지 않음'",
-      "missing_info": "빠진 핵심 정보가 있다면 구체적으로 지적. 없으면 '발견되지 않음'",
-      "action_visible": "사용자가 해야 할 일(행동)이 명확한지 여부. 명확하면 '명확함', 아니면 개선 포인트 제시",
-      "dangerous_expressions": "위험하거나 단정적인 표현이 있다면 구체적으로 지적. 없으면 '발견되지 않음'"
-    }}
-    """
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
-    }
-    
-    ctx = _make_ssl_context()
-    req = urllib.request.Request(url, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
-    
+출력 (백틱 없이 순수 JSON만):
+{{"safety_issues": "위험한 처방이 있으면 지적, 없으면 '없음'",
+  "missing_precautions": "빠진 주의사항, 없으면 '없음'",
+  "overall_verdict": "안전/주의필요/위험 중 하나"}}"""
+
+    data = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"}}
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions",
+                                data=json.dumps(data).encode('utf-8'), headers=headers)
     try:
-        response = urllib.request.urlopen(req, context=ctx, timeout=20)
-        res_data = json.loads(response.read())
-        text_res = res_data['candidates'][0]['content']['parts'][0]['text']
-        text_res = text_res.replace('```json', '').replace('```', '').strip()
-        result = json.loads(text_res)
-        
-        report = []
-        report.append("# 🔍 검토자 에이전트 리포트\n")
-        report.append("> 검토 방식: **Gemini API (LLM 보조 검토)**\n")
-        report.append("## 📋 LLM 검토 결과")
-        
-        labels = {
-            "unfounded_claims": "근거 없는 단정",
-            "missing_info": "핵심 정보 누락",
-            "action_visible": "행동 명확성",
-            "dangerous_expressions": "위험한 표현"
-        }
-        for key, label in labels.items():
-            value = result.get(key, "확인 불가")
-            icon = "✅" if "발견되지 않음" in str(value) or "명확" in str(value) else "⚠️"
-            report.append(f"- [{icon}] **{label}**: {value}")
-        
-        report.append("\n## 📝 최종 권고사항")
-        report.append("- LLM 검토 결과는 보조 의견입니다. 최종 판단은 사용자가 직접 하세요.")
-
-        report_str = "\n".join(report)
-        needs_refetch = "발견되지 않음" not in report_str  # LLM이 문제를 발견하면 재수집 신호
-        return report_str, needs_refetch
+        res = urllib.request.urlopen(req, context=_make_ssl_context(), timeout=20)
+        result = json.loads(json.loads(res.read())['choices'][0]['message']['content']
+                          .replace('```json', '').replace('```', '').strip())
+        report = [f"# 🔍 LLM 처방 안전 검토\n",
+                  f"> 대상자: {profile.get('age')}세 {profile.get('gender')}, 질환: {conditions_str}\n",
+                  "## 📋 LLM 검토 결과\n"]
+        for k, v in result.items():
+            icon = "✅" if v in ("없음", "안전") else "⚠️"
+            report.append(f"- [{icon}] **{k}**: {v}")
+        report.append("\n> LLM 검토 결과는 보조 의견입니다.")
+        return "\n".join(report)
     except Exception as e:
-        print(f"  - Gemini 검토 API 오류: {e} → 규칙 기반 검토로 전환")
+        print(f"  - LLM 검토 실패: {e}")
         return None
 
 
-def send_to_telegram(guides):
-    """전체 학습 가이드를 텔레그램으로 분할 전송합니다. 실패해도 기본 실행에 영향 없음."""
+def review_guide(guide_text, profile):
+    """검토 라우터: LLM 우선, 실패 시 규칙 기반 fallback."""
+    if USE_LLM_REVIEW:
+        result = review_with_openai(guide_text, profile)
+        if result:
+            return result
+    return review_prescription_with_rules(guide_text, profile)
+
+
+# ═══════════════════════════════════════════
+# [에이전트 6] 텔레그램 전송 (선택)
+# ═══════════════════════════════════════════
+
+def send_to_telegram(text):
+    """텔레그램으로 결과 전송. 실패해도 기본 실행에 영향 없음."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        print("  - 텔레그램 설정 없음 (TELEGRAM_BOT_TOKEN/CHAT_ID 미설정)")
         return
 
-    # 전체 가이드 전송 (MarkdownV2 특수문자 이스케이프)
-    message = guides
     for ch in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
-        message = message.replace(ch, f'\\{ch}')
+        text = text.replace(ch, f'\\{ch}')
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     ctx = _make_ssl_context()
-
-    # 4096자 단위로 분할 전송 (줄 단위로 쪼개서 단어 중간 절단 방지)
-    chunks = []
-    current = []
-    current_len = 0
-    for line in message.split('\n'):
-        line_len = len(line) + 1  # +1 for newline
-        if current_len + line_len > 4096:
+    # 4096자 단위 분할 전송
+    chunks, current, cur_len = [], [], 0
+    for line in text.split('\n'):
+        ll = len(line) + 1
+        if cur_len + ll > 4096:
             chunks.append('\n'.join(current))
-            current = [line]
-            current_len = line_len
+            current, cur_len = [line], ll
         else:
             current.append(line)
-            current_len += line_len
+            cur_len += ll
     if current:
         chunks.append('\n'.join(current))
 
-    total = len(chunks)
     for i, chunk in enumerate(chunks, 1):
-        payload = json.dumps({
-            "chat_id": chat_id,
-            "text": chunk,
-            "parse_mode": "MarkdownV2"
-        }).encode('utf-8')
+        payload = json.dumps({"chat_id": chat_id, "text": chunk, "parse_mode": "MarkdownV2"}).encode('utf-8')
         req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
         try:
             urllib.request.urlopen(req, context=ctx, timeout=10)
-            print(f"  - 텔레그램 전송 완료 ✅ ({i}/{total})")
-            if i < total:
-                time.sleep(1)  # 연속 전송 시 텔레그램 rate limit 방지
+            print(f"  - 텔레그램 전송 ✅ ({i}/{len(chunks)})")
+            if i < len(chunks):
+                time.sleep(1)
         except Exception as e:
-            print(f"  - 텔레그램 전송 실패 ⚠️ ({i}/{total}): {e}")
+            print(f"  - 텔레그램 전송 실패 ⚠️: {e}")
 
 
-def review_guides(guides):
-    """검토자 에이전트 라우터. USE_LLM_REVIEW 플래그에 따라 분기하고, 실패 시 규칙 기반으로 fallback합니다.
-    Returns: (report_str, needs_refetch) 튜플
-    """
-    if USE_LLM_REVIEW:
-        result = review_guides_with_llm(guides)
-        if result is not None:
-            return result
-        print("  - LLM 검토 실패 → 규칙 기반 검토로 fallback")
-    return review_guides_with_rules(guides)
-
+# ═══════════════════════════════════════════
+# 메인 파이프라인
+# ═══════════════════════════════════════════
 
 def main():
     load_env()
-    
-    # 1. 입력 자료 (내부 자료 풀 - 외부 도구 실패해도 의미 있는 결과를 보장)
-    SAMPLE_INPUT = """
-[논문] 시니어 근력 운동이 인지 기능에 미치는 영향
-- 초록: 본 연구는 65세 이상 노인을 대상으로 주 3회 근력 운동을 실시하였을 때 인지 기능의 변화를 분석하였다. 결과적으로 인지 기능 점수가 15% 향상되었다.
-- 키워드: 시니어, 근력, 인지
-- 링크: https://example.com/paper/1
 
-[뉴스] 지역 보건소, 어르신 대상 아쿠아로빅 교실 오픈
-- 내용: 다음 달부터 지역 보건소에서 관절에 무리가 가지 않는 아쿠아로빅 교실을 무료로 운영한다.
-- 키워드: 어르신, 수영, 보건소
-- 링크: https://example.com/news/1
+    print("=" * 50)
+    print("  맞춤형 운동처방 에이전트")
+    print("=" * 50)
+    print("\n대상자 정보를 입력하세요.")
+    print("예: 고혈압과 비만을 가지고 있는 57세 여성의 운동처방에 대해 설명해줘")
+    print("-" * 50)
 
-[논문] 노년기 단백질 섭취와 근감소증의 상관관계
-- 초록: 단백질 섭취량이 부족한 노년층에서 근감소증 발생 비율이 높게 나타났다. 규칙적인 운동과 함께 충분한 영양 섭취가 필수적이다.
-- 키워드: 노년기, 단백질, 근감소증
-- 링크: https://example.com/paper/2
+    user_query = input("\n> ").strip()
+    if not user_query:
+        user_query = "고혈압과 비만을 가지고 있는 57세 여성의 운동처방에 대해 설명해줘"
+        print(f"(기본 예시 사용: {user_query})")
 
-[뉴스] 프로 스포츠 구단, 지역 상권 활성화 이벤트
-- 내용: 지역 주민들을 위해 야구장 인근 식당 방문 시 티켓을 할인해준다.
-- 키워드: 프로야구, 지역상권, 할인
-- 링크: https://example.com/news/2
+    # [에이전트 1] 프로필 추출
+    print(f"\n[에이전트 1] 대상자 프로필 분석 중...")
+    profile = extract_user_profile(user_query)
+    print(f"  - 나이: {profile['age']}세")
+    print(f"  - 성별: {profile['gender']}")
+    print(f"  - 질환: {profile['conditions']}")
+    print(f"  - 연령대: {profile['age_group']}")
 
-[이론] ACSM 노인 운동 가이드라인 (Aerobic)
-- 내용: ACSM은 65세 이상 성인에게 주 5일 이상 중강도(RPE 5~6) 유산소 운동을 최소 30분씩 권고한다. 고강도일 경우 주 3일 20분 이상.
-- 키워드: ACSM, 유산소, 노인, FITT, 강도
-- 링크: https://example.com/theory/acsm-aerobic
+    # [에이전트 2] 지식 검색 (로컬 RAG + 외부 PubMed)
+    print(f"\n[에이전트 2] 관련 자료 검색 중...")
+    facts = search_knowledge_base(profile)
+    print(f"  - 내부 지식 베이스: {len(facts)}건 매칭")
 
-[이론] FITT-VP 원칙과 시니어 저항운동 처방
-- 내용: 빈도(Frequency) 주 2~3회, 강도(Intensity) 1RM의 60~80%, 시간(Time) 8~10종목 1~3세트, 형태(Type) 대근육군 우선이 시니어 저항운동의 기본이다.
-- 키워드: FITT, 저항운동, 근력, 처방, 1RM
-- 링크: https://example.com/theory/fitt-vp
+    ext_facts, ext_status = fetch_external_context(profile)
+    if ext_facts:
+        facts.extend(ext_facts)
+        print(f"  - 외부 논문 추가: {len(ext_facts)}건")
+    elif USE_EXTERNAL:
+        print(f"  - 외부 논문 없음, 내부 자료만 사용 ⚠️")
 
-[이론] 근감소증(Sarcopenia) 진단 기준 - AWGS 2019
-- 내용: 아시아근감소증워킹그룹(AWGS) 2019 기준은 악력(남<28kg, 여<18kg), 보행속도(<1.0m/s), 근육량(SMI) 감소를 종합 평가한다.
-- 키워드: 근감소증, 진단, AWGS, 악력, 보행속도, 노화기전
-- 링크: https://example.com/theory/awgs-2019
+    # [에이전트 3] 관련성 점수 + 보강
+    print(f"\n[에이전트 3] 관련성 평가 및 보강 중...")
+    facts = enrich_facts(facts, profile)
 
-[케이스] 고혈압 시니어 저항운동 처방 사례
-- 내용: 수축기 140~159mmHg 회원에게는 발살바 호흡 금지, 1RM 40~60% 저강도부터 시작, 운동 전후 혈압 측정을 필수로 한다.
-- 키워드: 고혈압, 저항운동, 만성질환, 안전관리, 처방
-- 링크: https://example.com/case/htn-resistance
+    # output.md 저장 (데이터 추출 표)
+    save_data_table(facts)
+    print(f"  - output.md 저장 완료 ✅")
 
-[케이스] 무릎관절염 회원 아쿠아 운동 적용
-- 내용: KL grade 2 이상의 무릎 골관절염 회원은 체중부하를 줄인 수중 운동(수온 30~32℃, 30~45분)이 통증 없이 근력을 키우는 데 효과적이다.
-- 키워드: 관절염, 수영, 무릎, 만성질환, 처방
-- 링크: https://example.com/case/knee-aqua
+    # [에이전트 4] 맞춤형 처방 생성
+    print(f"\n[에이전트 4] 맞춤형 운동처방 작성 중...")
+    guide = write_prescription_guide(facts, profile)
+    Path("output_user_guide.md").write_text(guide, encoding="utf-8")
+    print(f"  - output_user_guide.md 저장 완료 ✅")
 
-[용어] sarcopenia
-- 내용: sarcopenia = 근감소증. 노화에 따른 골격근량과 근력의 점진적 감소를 의미한다. 발음 [sɑːrkoʊˈpiːniə].
-- 키워드: 영어용어, 근감소증, 노화기전, 학술용어
-- 링크: https://example.com/term/sarcopenia
+    # [에이전트 5] 안전 검토
+    print(f"\n[에이전트 5] 처방 안전 검토 중...")
+    review = review_guide(guide, profile)
+    Path("review_report.md").write_text(review, encoding="utf-8")
+    print(f"  - review_report.md 저장 완료 ✅")
 
-[용어] frailty
-- 내용: frailty = 노쇠. 생리적 예비력 감소로 외부 스트레스에 취약해진 상태. Fried criteria 5개 중 3개 이상 해당 시 진단.
-- 키워드: 영어용어, 노쇠, 노화기전, 학술용어
-- 링크: https://example.com/term/frailty
+    # 최종 결과 출력
+    print("\n" + "=" * 50)
+    print(guide)
+    print("\n" + "=" * 50)
+    print(review)
 
-[용어] gait speed
-- 내용: gait speed = 보행속도. 4m 또는 6m 거리를 걷는 시간으로 측정. 1.0m/s 미만이면 근감소증/낙상 위험 지표.
-- 키워드: 영어용어, 보행속도, 체력평가, 낙상예방, 학술용어
-- 링크: https://example.com/term/gait-speed
+    # 텔레그램 전송 (선택)
+    print("\n텔레그램 전송 시도 중...")
+    send_to_telegram(guide)
 
-[용어] balance training
-- 내용: balance training = 균형훈련. 한 발 서기, 태극권, BOSU 등. 시니어 낙상예방에 주 2~3회 권장.
-- 키워드: 영어용어, 균형, 낙상예방, 학술용어
-- 링크: https://example.com/term/balance-training
-"""
+    print("\n✅ 모든 에이전트 실행 완료!")
 
-    print(f"-> 설정: USE_LLM={USE_LLM}, USE_EXTERNAL={USE_EXTERNAL}, INTERNAL_SAMPLE_SIZE={INTERNAL_SAMPLE_SIZE}")
 
-    # [에이전트 1] 핵심 정보 추출
-    print("\n[에이전트 1] 자료 추출 중...")
-    all_internal = extract_facts(SAMPLE_INPUT)
-
-    if RANDOM_SEED is not None:
-        random.seed(RANDOM_SEED)
-
-    # 이론/용어: 큐레이션된 학습 자료로 항상 포함, 링크는 불필요
-    theory_vocab = [i for i in all_internal if i["type"] in ("이론", "용어")]
-    for item in theory_vocab:
-        item["link"] = "링크 없음"
-    theory_n = min(THEORY_SAMPLE_SIZE, len(theory_vocab))
-    facts = random.sample(theory_vocab, theory_n)
-    print(f"  - 이론/용어 {theory_n}개 추출 ✅")
-
-    # 논문/뉴스/케이스: 외부 데이터가 있으면 외부 사용, 없으면 내부로 보충
-    if USE_EXTERNAL:
-        print("  - 외부 API에서 보조 데이터 가져오는 중...")
-        external_facts, ext_status = fetch_external_context()
-        for source, state in ext_status.items():
-            print(f"    [{source}] {state}")
-        if external_facts:
-            facts.extend(external_facts)
-            print(f"  - 외부 도구에서 {len(external_facts)}개 항목 추가 ✅")
-        else:
-            other_internal = [i for i in all_internal if i["type"] not in ("이론", "용어")]
-            other_n = min(INTERNAL_SAMPLE_SIZE - theory_n, len(other_internal))
-            facts.extend(random.sample(other_internal, other_n))
-            print(f"  - 외부 데이터 없음, 내부 샘플 {other_n}개로 보충 ⚠️")
-    else:
-        other_internal = [i for i in all_internal if i["type"] not in ("이론", "용어")]
-        other_n = min(INTERNAL_SAMPLE_SIZE - theory_n, len(other_internal))
-        facts.extend(random.sample(other_internal, other_n))
-        print(f"  - 외부 도구 비활성화, 내부 샘플 {other_n}개 추가")
-
-    print("\n=== facts ===")
+def save_data_table(facts):
+    """추출된 항목을 output.md 표로 저장한다."""
+    lines = ["# 시니어 스포츠 학습 도우미: 데이터 추출 표\n",
+             "| 유형 | 제목 | 키워드 | 요약 | 관련성 | 출처 |",
+             "|---|---|---|---|---|---|"]
     for f in facts:
-        print(f)
-
-    # [에이전트 2] LLM 보강
-    facts = enrich_facts(facts)
-
-    save_markdown_table(facts)
-    print("  - output.md 저장 완료 ✅")
-
-    # [에이전트 3] 분류
-    print("\n[에이전트 3] 분류 중...")
-    grouped = classify_items(facts)
-    print("=== grouped ===")
-    print(grouped)
-
-    # [에이전트 4] 최종 출력 작성
-    print("\n[에이전트 4] 최종 출력 작성 중...")
-    result = write_output(grouped)
-    print("=== result ===")
-    print(result)
-    guides = write_user_guides(grouped, facts)
-    save_user_guides(guides)
-    print("  - output_user_guide.md 저장 완료 ✅")
-
-    # [에이전트 5] 검토자
-    print("\n[에이전트 5] 검토자 점검 중...")
-    review_report, needs_refetch = review_guides(guides)
-    print("=== review_report ===")
-    print(review_report)
-
-    # 피드백 루프: 자료 부족 감지 시 다른 쿼리로 1회 재수집
-    if needs_refetch and USE_EXTERNAL:
-        print("\n[검토자 → 에이전트 1] 자료 부족 감지 → 다른 쿼리로 재수집 중...")
-        extra_facts, extra_status = fetch_external_context(
-            query="노인 낙상예방 OR 시니어 재활운동",
-            pubmed_query="fall prevention elderly OR balance training older adults"
-        )
-        for source, state in extra_status.items():
-            print(f"    [{source}] {state}")
-        if extra_facts:
-            extra_facts = enrich_facts(extra_facts)
-            facts.extend(extra_facts)
-            grouped = classify_items(facts)
-            guides = write_user_guides(grouped, facts)
-            save_user_guides(guides)
-            print("  - 재수집 후 가이드 갱신 완료 ✅")
-            review_report, _ = review_guides(guides)  # 갱신된 가이드 재검토
-        else:
-            print("  - 재수집도 데이터 없음, 기존 가이드 유지 ⚠️")
-
-    Path("review_report.md").write_text(review_report, encoding="utf-8")
-    print("  - review_report.md 저장 완료 ✅")
-
-    # 텔레그램 전송
-    print("\n텔레그램으로 오늘의 핵심 전송 중...")
-    send_to_telegram(guides)
+        content = (f.get('content', '') or '')[:60].replace('\n', ' ')
+        score = f.get('relevance_score', 0)
+        lines.append(f"| {f.get('type','')} | {f.get('title','')[:50]} | {f.get('keywords','')} | {content} | {score} | {f.get('source','')} |")
+    Path("output.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":

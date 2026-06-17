@@ -1,11 +1,17 @@
 # 시니어 스포츠 학습 도우미: 데이터 추출 표
 
-| 자료 유형 | 제목 | 관심 키워드 | 핵심 요약 | 실전 적용 팁 | 원문 링크 |
+| 유형 | 제목 | 키워드 | 요약 | 관련성 | 출처 |
 |---|---|---|---|---|---|
-| 뉴스 | “근감소증 막고 신체 활력 충전”… 서구보건소 ‘시니어 근력강화 교실’ 성료 - 복지투데이 | 시니어, 스포츠, 보건소, 커뮤니티 | 서구보건소에서 '시니어 근력강화 교실'이 성공적으로 종료되었다는 뉴스입니다. 이 프로그램은 노년층의 근감소증을 예방하고 전반적인 신체 활력을 충전하는 것을 목표로 진행되었습니다. 이는 지역사회 기반 노인 건강 증진 프로그램의 성공적인 사례를 보여줍니다. | 복지관이나 보건소 현장에서는 어르신들에게 **주 2~3회, '약간 힘들다'고 느낄 정도(RPE 12-14)의 중강도** 근력 운동을 권장하고, 낙상 예방을 위해 하체 근력 및 균형 운동을 포함하며 운동 중 통증이 발생하면 즉시 중단하도록 지도해야 합니다. | [이동하기](https://news.google.com/rss/articles/CBMibEFVX3lxTE9NTU5kNk1sTjFFUDBMd3ZWNU1sQnMzZWZWczFMdG9mVGVWX20yd3Vzd0M0RW8tbl9Cb1BLaWhPTGRMS2lUanctXzQ5TlNTMGpBWVNBVEpaaWdSZlBVYkh3b01WdmJtWGtyMHMyaQ?oc=5) |
-| 뉴스 | “건강한 노년, 탄탄한 근력으로… 인천 서구보건소 시니어 운동교실 성황리에 마무리” - 로컬세계 | 시니어, 스포츠, 보건소, 커뮤니티 | “건강한 노년, 탄탄한 근력으로”라는 제목의 뉴스에 따르면, 인천 서구보건소에서 시니어 운동교실이 성황리에 마무리되었습니다. 이 프로그램은 노년층의 건강 증진을 위해 근력 강화의 중요성을 강조하고 있습니다. | 복지관·보건소 현장에서는 어르신들의 참여를 독려하기 위해 낮은 강도(최대근력의 40~60%)의 밴드나 맨몸 운동을 주 2~3회 제공하고, 안전을 위해 개별 맞춤 지도와 주의 깊은 관찰이 필요합니다. | [이동하기](https://news.google.com/rss/articles/CBMiYEFVX3lxTE9RaC1ia2tLajY2UFZHLWJjYlJUZjhVX1NxbENXOHJuaUhNWW5BUWUyTEgwTEF1X1FCS1lNYTJiaVlJeUF6a3lNZV9QYW5LMHptbGxYWVdDaE5HZ2FMTjBSTdIBWEFVX3lxTE1pNU41LWtjVG9tY1RablFPWVRGZHgtQnFWVGRVX3R1d2VLX1dpcFl5Nms1aHVEdzhjV045OUgwMUFxYk9uZ093REhWMkc2YUVrZUhJb3dhd2Q?oc=5) |
-| 논문 | Cluster Randomized Trial of Reablement Strategies Targeting Sarcopenia (ReStart-S) in Long-Term Care Settings. | 근감소증 | 이 논문은 장기요양시설 거주 노인의 근감소증을 관리하기 위한 재활 촉진 전략(ReStart-S)의 효과를 클러스터 무작위 배정 시험을 통해 평가했습니다. 이는 노인들의 근육 감소를 늦추고 기능적 독립성을 향상시키기 위한 실제적 개입 방안을 모색하는 중요한 연구입니다. | 복지관이나 보건소에서는 근감소증 예방을 위해 주 2-3회, 중등도 이상의 강도로 스쿼트(의자에서 일어나기)나 아령 들기 등 '저항 운동'을 지도하며, 항상 개인의 체력과 컨디션을 고려한 안전한 운동 환경을 조성해야 합니다. | [이동하기](https://pubmed.ncbi.nlm.nih.gov/42218822/) |
-| 논문 | 12‑weeks fisetin supplementation and interval resistance with aerobic training: changes in Maresin‑1 and inflammatory markers in men with obesity: a randomized controlled trial. | 유산소 | 이 논문은 '12주간의 피세틴 보충과 인터벌 저항 및 유산소 훈련이 비만 남성의 마레신-1 및 염증 지표에 미치는 변화'에 대한 무작위 대조군 연구입니다. 비만 남성에게 12주 동안 피세틴 보충과 인터벌 저항 및 유산소 복합 운동을 병행했을 때, 염증 반응을 조절하는 마레신-1과 다른 염증 지표들이 어떻게 변화하는지를 밝히고자 했습니다. | 복지관이나 보건소 현장에서는 대상자의 비만도와 신체 능력에 맞춰 '인터벌 저항 훈련'과 '유산소 훈련'을 주 2-3회 병행하는 복합 운동 프로그램을 12주 이상 꾸준히 지도하여 염증 감소 및 건강 개선을 유도하되, 고강도 인터벌 시에는 반드시 전문가의 지도와 사전 평가를 통해 안전을 확보해야 합니다. | [이동하기](https://pubmed.ncbi.nlm.nih.gov/42218768/) |
-| 이론 | 근감소증(Sarcopenia) 진단 기준 - AWGS 2019 | 근감소증, 진단, AWGS, 악력, 보행속도, 노화기전 | 이 자료는 근감소증(Sarcopenia)의 진단 기준으로 아시아근감소증워킹그룹(AWGS) 2019년에 발표된 내용을 다룹니다. AWGS 2019 기준은 악력(남<28kg, 여<18kg), 보행속도(<1.0m/s), 그리고 근육량(SMI) 감소를 종합적으로 평가합니다. | 복지관이나 보건소에서 어르신들을 대상으로 악력 측정 및 10m 보행 속도 측정을 정기적으로 실시하여, 기준치 미만인 경우 근력 강화 및 유산소 운동 프로그램을 우선적으로 처방하고 추적 관리해야 합니다. | 링크 없음 |
-| 용어 | sarcopenia | 영어용어, 근감소증, 노화기전, 학술용어 | 근감소증(Sarcopenia)은 노화에 따라 발생하는 골격근량 및 근력의 점진적인 감소 현상을 의미합니다. 이는 단순한 근육량 감소를 넘어 근 기능 저하를 동반하며 노년층의 건강에 큰 영향을 미칩니다. | 복지관·보건소 현장에서는 어르신들에게 '주 2~3회, 중강도(약간 힘든 정도)의 근력운동(예: 의자 스쿼트, 밴드 운동)을 꾸준히 실천하도록 지도하고, 고단백 식단 섭취를 독려하세요. | 링크 없음 |
-| 이론 | ACSM 노인 운동 가이드라인 (Aerobic) | ACSM, 유산소, 노인, FITT, 강도 | ACSM은 65세 이상 성인에게 주 5일 이상 중강도(RPE 5~6) 유산소 운동을 최소 30분씩 권고한다. 고강도일 경우 주 3일 20분 이상. | 핵심 수치: RPE 5~6, 30분, 20분 | 링크 없음 |
+| 논문 | Hypertension management profiles in Chinese adults | 고혈압 | [규칙 기반] 고혈압 관련 연구 | 6 | 외부(PubMed) |
+| 케이스 | 고혈압 시니어 저항운동 처방 사례 | 고혈압, 저항운동, 만성질환, 안전관리, 처방 | 수축기 140~159mmHg 회원에게는 발살바 호흡 금지, 1RM 40~60% 저강도부터 시작, 운동 전후  | 4 | 내부(지식베이스) |
+| 논문 | Oxygen Supplementation Improves Oxygen Uptake Kine | 노인, 운동처방 | [규칙 기반] 노인 운동 관련 연구 | 3 | 외부(PubMed) |
+| 논문 | Asynchronous Broadcasting of Audiovisual Content a | 노인, 운동처방 | [규칙 기반] 노인 운동 관련 연구 | 3 | 외부(PubMed) |
+| 이론 | ACSM 노인 운동 가이드라인 (Aerobic) | ACSM, 유산소, 노인, FITT, 강도 | ACSM은 65세 이상 성인에게 주 5일 이상 중강도(RPE 5~6) 유산소 운동을 최소 30분씩 권고한다. | 0 | 내부(지식베이스) |
+| 이론 | FITT-VP 원칙과 시니어 저항운동 처방 | FITT, 저항운동, 근력, 처방, 1RM | 빈도(Frequency) 주 2~3회, 강도(Intensity) 1RM의 60~80%, 시간(Time) 8~ | 0 | 내부(지식베이스) |
+| 이론 | 근감소증(Sarcopenia) 진단 기준 - AWGS 2019 | 근감소증, 진단, AWGS, 악력, 보행속도, 노화기전 | 아시아근감소증워킹그룹(AWGS) 2019 기준은 악력(남<28kg, 여<18kg), 보행속도(<1.0m/s) | 0 | 내부(지식베이스) |
+| 용어 | sarcopenia | 영어용어, 근감소증, 노화기전, 학술용어 | sarcopenia = 근감소증. 노화에 따른 골격근량과 근력의 점진적 감소를 의미한다. | 0 | 내부(지식베이스) |
+| 용어 | frailty | 영어용어, 노쇠, 노화기전, 학술용어 | frailty = 노쇠. 생리적 예비력 감소로 외부 스트레스에 취약해진 상태. Fried criteria 5 | 0 | 내부(지식베이스) |
+| 용어 | gait speed | 영어용어, 보행속도, 체력평가, 낙상예방, 학술용어 | gait speed = 보행속도. 4m 또는 6m 거리를 걷는 시간으로 측정. 1.0m/s 미만이면 근감소증 | 0 | 내부(지식베이스) |
+| 용어 | balance training | 영어용어, 균형, 낙상예방, 학술용어 | balance training = 균형훈련. 한 발 서기, 태극권, BOSU 등. 시니어 낙상예방에 주 2~ | 0 | 내부(지식베이스) |
+| 용어 | RPE (Rating of Perceived Exertion) | RPE, 강도, 체력평가, 학술용어 | RPE = 주관적 운동 강도. Borg 6~20 척도 또는 수정 0~10 척도. 노인은 심박수보다 RPE 기 | 0 | 내부(지식베이스) |
+| 용어 | 1RM (1 Repetition Maximum) | 1RM, 근력, 체력평가, 학술용어 | 1RM = 1회 최대 반복 중량. 직접 측정이 위험한 노인은 추정 1RM(다회 반복법)을 사용한다. | 0 | 내부(지식베이스) |
